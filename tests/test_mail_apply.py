@@ -62,12 +62,17 @@ def test_amazon_order_is_created_and_moves_forward():
 def test_older_mail_does_not_move_status_back():
     parcels: dict[str, Parcel] = {}
     _apply(parcels, "074_versandbestaetigung_versendet.eml")
-    assert _apply(parcels, "001_bestellbestaetigung_bestellt.eml") == [None]
+    # (the older mail only adds its line to the history, see the late mails below)
+    [late] = _apply(parcels, "001_bestellbestaetigung_bestellt.eml")
+    assert late.old_status is ParcelStatus.IN_TRANSIT
     assert parcels[PLAETTCHEN].status is ParcelStatus.IN_TRANSIT
+    assert [e.text for e in parcels[PLAETTCHEN].result.events] == ["Versendet", "Bestellt"]
     _apply(parcels, "002_bestellbestaetigung_bestellt.eml")
     _apply(parcels, "023_order_update_geliefert.eml")
-    assert _apply(parcels, "096_shipment_tracking_zustellung_heute_f_r_d.eml", True) == [None]
+    [late] = _apply(parcels, "096_shipment_tracking_zustellung_heute_f_r_d.eml", True)
+    assert late.old_status is ParcelStatus.DELIVERED
     assert parcels[AIRPODS].status is ParcelStatus.DELIVERED
+    assert [e.text for e in parcels[AIRPODS].result.events][:2] == ["Zugestellt", "In Zustellung"]
     assert parcels[AIRPODS].delivery_code is None
 
 
@@ -381,8 +386,10 @@ def test_gls_drop_off_notice_never_moves_a_parcel_back():
     parcels: dict[str, Parcel] = {}
     _apply(parcels, GLS_TODAY)
     [change] = _apply(parcels, GLS_DROP_OFF)
-    assert change is None
+    # (sent four days before "kommt heute": it only adds its line to the history)
+    assert change.old_status is ParcelStatus.OUT_FOR_DELIVERY
     assert parcels[GLS_FIRST].status is ParcelStatus.OUT_FOR_DELIVERY
+    assert [e.text for e in parcels[GLS_FIRST].result.events] == ["In Zustellung", "Angekündigt"]
 
 
 def test_gls_mail_merges_into_the_ebay_order_that_named_gls():
@@ -891,3 +898,68 @@ def test_a_mail_with_its_own_words_adds_a_history_line_without_a_new_status():
     ]
     # The same mail once more tells nothing new.
     assert apply_update(parcels, soon, NOW) is None
+
+
+# ----- A late mail adds its line to the history and leaves the status alone -----
+def _at(hour: int) -> datetime:
+    return datetime(2026, 10, 7, hour, 0, tzinfo=BERLIN)
+
+
+def _lines(parcels: dict[str, Parcel]) -> list[tuple[int, str]]:
+    return [(e.timestamp.hour, e.text) for e in parcels[_DHL].result.events]
+
+
+def test_a_late_mail_with_an_earlier_status_only_adds_its_line():
+    parcels: dict[str, Parcel] = {}
+    apply_update(parcels, _dhl(ParcelStatus.AWAITING_PICKUP, _at(16)), NOW)
+    changed_at = parcels[_DHL].last_change_at
+    late = _dhl(ParcelStatus.IN_TRANSIT, _at(8))
+    change = apply_update(parcels, late, datetime(2026, 10, 8, 9, 0, tzinfo=UTC))
+    assert change is not None and change.old_status is ParcelStatus.AWAITING_PICKUP
+    p = parcels[_DHL]
+    assert (p.status, p.last_change_at) == (ParcelStatus.AWAITING_PICKUP, changed_at)
+    assert _lines(parcels) == [(16, "Abholbereit"), (8, "Unterwegs")]
+    # The same mail once more: its line is there already.
+    assert apply_update(parcels, late, NOW) is None
+
+
+def test_a_late_mail_finds_its_place_between_the_lines():
+    parcels: dict[str, Parcel] = {}
+    apply_update(parcels, _dhl(ParcelStatus.OUT_FOR_DELIVERY, _at(10)), NOW)
+    apply_update(parcels, _dhl(ParcelStatus.AWAITING_PICKUP, _at(16)), NOW)
+    attempt = _dhl(ParcelStatus.IN_TRANSIT, _at(15), postponed=True,
+                   status_text="Zustellung versucht")
+    assert apply_update(parcels, attempt, NOW) is not None
+    assert parcels[_DHL].status is ParcelStatus.AWAITING_PICKUP
+    assert _lines(parcels) == [
+        (16, "Abholbereit"),
+        (15, "Zustellung versucht"),
+        (10, "In Zustellung"),
+    ]
+
+
+def test_a_mail_that_is_not_late_adds_no_line():
+    parcels: dict[str, Parcel] = {}
+    apply_update(parcels, _dhl(ParcelStatus.AWAITING_PICKUP, _at(16)), NOW)
+    assert apply_update(parcels, _dhl(ParcelStatus.IN_TRANSIT, _at(17)), NOW) is None
+    assert _lines(parcels) == [(16, "Abholbereit")]
+
+
+def test_a_late_mail_adds_nothing_while_the_carrier_answers():
+    parcels: dict[str, Parcel] = {}
+    apply_update(parcels, _dhl(ParcelStatus.AWAITING_PICKUP, _at(16)), NOW)
+    parcels[_DHL].last_poll_at = NOW  # the history is the carrier's own
+    assert apply_update(parcels, _dhl(ParcelStatus.IN_TRANSIT, _at(8)), NOW) is None
+    assert _lines(parcels) == [(16, "Abholbereit")]
+
+
+def test_a_late_mail_never_shortens_a_long_history():
+    scans = [TrackingEvent(_at(hour), f"Scan {hour}", None) for hour in range(20, 8, -1)]
+    result = TrackingResult(ParcelStatus.AWAITING_PICKUP, "Abholbereit", None, None, None, None,
+                            None, None, None, scans)
+    parcels = {_DHL: Parcel(_DHL, "dhl", "mail", None, NOW, NOW, result=result)}
+    # Older than every line: no room for it. Between the lines: the oldest one goes.
+    assert apply_update(parcels, _dhl(ParcelStatus.IN_TRANSIT, _at(8)), NOW) is None
+    apply_update(parcels, _dhl(ParcelStatus.IN_TRANSIT, _at(14).replace(minute=30)), NOW)
+    texts = [e.text for e in parcels[_DHL].result.events]
+    assert len(texts) == 12 and texts[6] == "Unterwegs" and texts[-1] == "Scan 10"

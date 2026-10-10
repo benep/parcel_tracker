@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ..carriers.gls import gls_number
@@ -62,8 +62,40 @@ def _step(status: ParcelStatus | None) -> int:
     return PROGRESS_STEP.get(status, 0) if status else 0
 
 
+def _text(parcel: Parcel, update: MailUpdate) -> str:
+    """The words for the status a mail tells: its own, else the usual ones."""
+    texts = SHOP_TEXT if parcel.carrier in SHOP_CARRIERS else CARRIER_TEXT
+    return update.status_text or texts.get(update.status, update.status.value)
+
+
+def _late_line(parcel: Parcel, update: MailUpdate) -> bool:
+    """Add the line of a late mail to the history, at its place in time; True if added.
+
+    For a mail that may not set its status and is older than the newest line. Not while
+    the carrier answers (the history is its own then), and not twice: a line that says
+    the same stands for it. Nothing else of the parcel changes.
+    """
+    old = strip_enrichment(parcel.result)
+    if old is None or (parcel.last_poll_at is not None and parcel.last_error is None):
+        return False
+    events, text = old.events, _text(parcel, update)
+    place = next((i for i, e in enumerate(events) if e.timestamp <= update.sent_at), len(events))
+    if place == 0 or any(e.text == text for e in events):
+        return False
+    line = TrackingEvent(update.sent_at, text, None)
+    # (a history that is full stays as long as it is: its oldest line goes instead)
+    lines = [*events[:place], line, *events[place:]][: max(len(events), MAX_EVENTS)]
+    if lines == events:
+        return False
+    parcel.result = with_track17(replace(old, events=lines), parcel.track17_result)
+    return True
+
+
 def _forward(parcel: Parcel, update: MailUpdate, now: datetime) -> bool:
-    """Take status/ETA/code from the mail unless it would move the parcel backwards."""
+    """Take status/ETA/code from the mail unless it would move the parcel backwards.
+
+    A late mail that would move it backwards still adds its line (see ``_late_line``).
+    """
     changed = False
     shown = parcel.result
     # Build on what the carrier and earlier mails said; what 17track filled in is put
@@ -79,8 +111,7 @@ def _forward(parcel: Parcel, update: MailUpdate, now: datetime) -> bool:
         assumed or postponed or _step(update.status) >= _step(parcel.status)
     ):
         parcel.assumed_delivered = False
-        texts = SHOP_TEXT if parcel.carrier in SHOP_CARRIERS else CARRIER_TEXT
-        text = update.status_text or texts.get(update.status, update.status.value)
+        text = _text(parcel, update)
         events = list(old.events) if old else []
         own_words = update.status_text is not None and old is not None and old.status_text != text
         if old is None or old.status is not update.status or assumed or own_words:
@@ -112,6 +143,8 @@ def _forward(parcel: Parcel, update: MailUpdate, now: datetime) -> bool:
             parcel.result = result
             parcel.last_change_at = now
             changed = True
+    elif update.status is not None and _late_line(parcel, update):
+        changed = True
     if parcel.status is ParcelStatus.DELIVERED:
         if parcel.delivery_code:
             parcel.delivery_code = parcel.delivery_code_day = None
