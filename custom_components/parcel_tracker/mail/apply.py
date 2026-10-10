@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ..carriers.gls import gls_number
-from ..carriers.track17 import strip_enrichment, with_track17
+from ..carriers.track17 import ENRICH_EVENTS, ENRICH_STATUS, strip_enrichment, with_track17
 from ..const import MAX_EVENTS, OPTIONAL_API_CARRIERS, SHOP_CARRIERS
 from ..models import (
     NO_ETA_STATUSES,
@@ -16,6 +16,7 @@ from ..models import (
     ParcelStatus,
     TrackingEvent,
     TrackingResult,
+    all_events,
 )
 from .base import (
     MailUpdate,
@@ -103,7 +104,8 @@ def _forward(parcel: Parcel, update: MailUpdate, now: datetime) -> bool:
             pickup_point=None,
             pickup_until=None,
             delivered_at=(update.delivered_at or update.sent_at) if delivered else None,
-            events=events[:MAX_EVENTS],
+            # (an order with a carrier number keeps both histories: see ``fold_parcel``)
+            events=events if parcel.tracking_ref else events[:MAX_EVENTS],
         )
         result = with_track17(result, parcel.track17_result)
         if shown is None or assumed or shown.to_dict() != result.to_dict():
@@ -329,6 +331,81 @@ def fold_delivered(
     order.track17_result = parcel.track17_result
     del parcels[parcel.number]
     return order
+
+
+def fold_parcel(parcels: dict[str, Parcel], order: Parcel, parcel: Parcel) -> bool:
+    """Fold a carrier parcel into the shop order somebody says it belongs to.
+
+    True if the order shows the parcel's result afterwards, False if it kept its own.
+
+    Unlike ``fold_delivered`` nothing is matched (the caller knows the two belong
+    together), and the parcel may still be on its way. The order carries the carrier's
+    number afterwards, and with it everything about asking the carrier: the times, an
+    error, the 17track registration. The parcel of its own is dropped from ``parcels``.
+
+    Shown is what is further along, as a mail would advance the order (``_forward``): the
+    parcel's result, unless the order's own is ahead of it. An order closed without a
+    delivery mail knows nothing for sure, and a problem the carrier reports always counts.
+    A day the shop's mails named stays while the carrier names none.
+
+    Nothing is announced: the parcel's status was announced with the parcel. Only if that
+    announcement still waits, the order takes it over, from the status it had itself.
+    """
+    ours, theirs = order.result, parcel.result
+    takes = theirs is not None and (
+        ours is None
+        or order.assumed_delivered
+        or theirs.status is ParcelStatus.EXCEPTION
+        or _step(theirs.status) >= _step(ours.status)
+    )
+    if takes:
+        if (
+            ours is not None
+            and ours.eta_date is not None
+            and theirs.eta_date is None
+            and theirs.status not in NO_ETA_STATUSES
+        ):
+            theirs = replace(
+                theirs,
+                eta_date=ours.eta_date,
+                eta_latest=ours.eta_latest,
+                eta_from=ours.eta_from,
+                eta_to=ours.eta_to,
+            )
+        waiting = parcel.unannounced_from not in (None, parcel.status)
+        order.unannounced_from = (order.unannounced_from or order.status) if waiting else None
+        order.result = theirs
+        order.last_change_at = parcel.last_change_at
+        order.assumed_delivered = False
+    else:
+        # The order's own status stays; 17track still fills what it leaves empty.
+        order.result = with_track17(ours, parcel.track17_result)
+    shown = order.result
+    if ours and theirs and not {ENRICH_STATUS, ENRICH_EVENTS} & set(shown.enriched):
+        # Both histories: the carrier knows nothing of "Bestellt" and "Versendet".
+        own = strip_enrichment(theirs)  # (what 17track filled in stays 17track's)
+        events = all_events(shown.events, ours.events, own.events if own else [])
+        order.result = replace(shown, events=events)
+    order.tracking_ref = parcel.number
+    order.tracking_carrier = parcel.carrier
+    order.track17 = parcel.track17
+    order.track17_carrier = parcel.track17_carrier
+    order.track17_result = parcel.track17_result
+    order.last_poll_at = parcel.last_poll_at
+    order.next_poll_at = parcel.next_poll_at
+    order.last_error = parcel.last_error
+    order.error_streak = parcel.error_streak
+    order.first_error_at = parcel.first_error_at
+    delivered = order.status is ParcelStatus.DELIVERED
+    order.track17_next_at = None if delivered else parcel.track17_next_at
+    if delivered:
+        order.delivery_code = order.delivery_code_day = None
+    elif parcel.delivery_code:
+        order.delivery_code = parcel.delivery_code
+        order.delivery_code_day = parcel.delivery_code_day
+    order.name = order.name or parcel.name
+    del parcels[parcel.number]
+    return takes
 
 
 def close_unconfirmed(parcel: Parcel, now: datetime) -> None:

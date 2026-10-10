@@ -82,6 +82,16 @@ class TrackingEvent:
         return cls(_dt(data["timestamp"]), data["text"], data.get("location"))
 
 
+def all_events(*histories: list[TrackingEvent]) -> list[TrackingEvent]:
+    """Every event of several histories once, newest first.
+
+    For a shop order that carries a carrier's number: the carrier knows nothing of
+    "Bestellt" and "Versendet", so its history never replaces the order's, it joins it.
+    """
+    events = dict.fromkeys(event for history in histories for event in history)
+    return sorted(events, key=lambda event: event.timestamp.timestamp(), reverse=True)
+
+
 @dataclass
 class TrackingResult:
     """Normalised carrier answer."""

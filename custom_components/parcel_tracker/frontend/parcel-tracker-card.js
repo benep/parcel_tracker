@@ -135,6 +135,11 @@ const SERVICE_ERRORS = {
   track17_auth: "17track hat den API-Key abgelehnt. Prüf ihn in den Optionen von Paket Tracker.",
   track17_unavailable: "17track ist gerade nicht erreichbar. Versuch es später noch einmal.",
   track17_not_possible: "Dieses Paket lässt sich nicht an 17track schicken (zugestellt oder noch keine Sendungsnummer).",
+  not_an_order: "Eine Sendungsnummer lässt sich nur einer Amazon- oder eBay-Bestellung hinzufügen.",
+  tracking_set: "Diese Bestellung hat schon eine Sendungsnummer.",
+  tracking_in_use: "Diese Sendungsnummer gehört schon zu einer anderen Bestellung.",
+  carrier_required: "Der Carrier dieser Nummer lässt sich nicht sicher erkennen. Wähl den Carrier aus.",
+  not_mergeable: "Dieses Paket lässt sich nicht mit einer Bestellung zusammenführen: Es ist selbst eine Bestellung oder läuft nur über 17track.",
 };
 
 function errorText(e) {
@@ -254,6 +259,12 @@ const canSpend17 = (t17) => t17.on && t17.rest !== 0;
 const canTrack17 = (a, s, t17) => canSpend17(t17) && s !== DONE && !a.track17
   && !(SHOPS.includes(a.carrier) && !a.tracking_ref);
 
+// A shop order without a carrier number can be given one by hand. Not once it is delivered
+// for sure: nothing is left to ask the carrier (closed without a delivery mail still is).
+const canSetTracking = (a, s) => SHOPS.includes(a.carrier) && !a.tracking_ref
+  && !(s === DONE && !a.assumed_delivered);
+const REF_CARRIERS = ["dhl", "dpd", "gls", "hermes", "ups"];
+
 // The shop's page of an order ("AMZ…"/"EBAY…" + the order number's digits; a further
 // shipment of the order ends in "P2", "P3", …). null for every other parcel.
 function orderUrl(number) {
@@ -345,6 +356,7 @@ class ParcelTrackerCard extends HTMLElement {
     this._confirming = new Set(); // numbers awaiting delete confirmation
     this._code = new Map(); // number -> "ask" | "show" (delivery code reveal)
     this._t17ask = new Set(); // numbers awaiting the 17track confirmation
+    this._refs = new Map(); // order number -> {text, carrier}: its carrier number being typed
     this._addAsk = false; // adding with "Andere (über 17track)" awaits confirmation
     this._addAskText = null; // the question currently shown in #addask
     this._added = null; // {key, before}: the parcel just added through the form
@@ -415,6 +427,7 @@ class ParcelTrackerCard extends HTMLElement {
       + "|del:" + Array.from(this._confirming).sort().join(",")
       + "|code:" + Array.from(this._code.entries()).map(([n, v]) => `${n}=${v}`).sort().join(",")
       + "|t17:" + Array.from(this._t17ask).sort().join(",")
+      + "|ref:" + Array.from(this._refs.keys()).sort().join(",")
       + "|quota:" + (h.states[QUOTA_ENTITY] ? `${h.states[QUOTA_ENTITY].state}@${h.states[QUOTA_ENTITY].last_updated}` : "");
   }
 
@@ -482,7 +495,9 @@ class ParcelTrackerCard extends HTMLElement {
         .pickup { font-size:12px; padding:2px 8px; border-radius:6px; background:var(--warning-color); color:var(--text-primary-color); }
         .done { opacity:.55; }
         .detail { margin-top:10px; font-size:12px; color:var(--secondary-text-color); line-height:1.6; }
+        .ev { padding-left:1em; text-indent:-1em; }
         .note { margin-top:4px; }
+        .link { padding:4px 0; border:none; color:var(--primary-color); }
         .actions { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
         .actions input { flex:1 1 140px; }
         button.danger { color:var(--error-color); border-color:var(--error-color); }
@@ -671,6 +686,31 @@ class ParcelTrackerCard extends HTMLElement {
     return `<svg viewBox="0 0 24 24" width="18" height="18" aria-label="${esc(carrier)}"><path ${fill} d="${ic.path}"/></svg>`;
   }
 
+  // Under the history: the carrier number of a shop order, or the link that adds one. A
+  // link, not a fourth button: the row of buttons below would wrap into two lines.
+  _refHtml(a, s) {
+    if (a.tracking_ref) {
+      const carrier = a.tracking_carrier ? ` · ${carrierLabel(a.tracking_carrier)}` : "";
+      return `<div class="detail note">${esc(`Sendungsnummer ${a.tracking_ref}${carrier}`)}</div>`;
+    }
+    if (!canSetTracking(a, s)) return "";
+    const n = esc(a.number);
+    const ref = this._refs.get(a.number);
+    if (!ref) {
+      return `<div class="detail note"><button type="button" class="link" data-a="ref" data-number="${n}">Sendungsnummer hinzufügen</button></div>`;
+    }
+    const options = REF_CARRIERS.map((key) => (
+      `<option value="${key}"${key === ref.carrier ? " selected" : ""}>${CARRIER_LABEL[key]}</option>`
+    )).join("");
+    return `<div role="group" aria-label="Sendungsnummer hinzufügen">
+      <div class="actions">
+        <input type="text" data-a="ref-input" data-number="${n}" aria-label="Sendungsnummer" placeholder="Sendungsnummer" value="${esc(ref.text)}" autocomplete="off">
+        <select data-a="ref-carrier" data-number="${n}" aria-label="Carrier"><option value="auto">Automatisch</option>${options}</select></div>
+      <div class="actions">
+        <button type="button" data-a="ref-save" data-number="${n}">Speichern</button>
+        <button type="button" data-a="ref-cancel" data-number="${n}">Abbrechen</button></div></div>`;
+  }
+
   _actionsHtml(a) {
     const n = esc(a.number);
     if (this._renaming.has(a.number)) {
@@ -789,6 +829,38 @@ class ParcelTrackerCard extends HTMLElement {
         else if (e.key === "Escape") { e.preventDefault(); this._renaming.delete(num); this._renderList(); }
       });
     }
+    const editRef = (editing, focus) => {
+      editing ? this._refs.set(num, { text: "", carrier: "auto" }) : this._refs.delete(num);
+      this._pendingFocus = { number: num, a: focus };
+      this._renderList();
+    };
+    on("ref", () => editRef(true, "ref-input"));
+    on("ref-cancel", () => editRef(false, "ref"));
+    const saveRef = async () => {
+      const ref = this._refs.get(num);
+      if (ref === undefined || ref.saving) return;
+      const number = ref.text.trim();
+      if (!number) { this._setError(SERVICE_ERRORS.empty); return; }
+      // The call may ask the carrier and take a moment: a second Enter must not send it again.
+      ref.saving = true;
+      const done = await this._call("set_tracking_number", { number: num, tracking_number: number, carrier: ref.carrier });
+      ref.saving = false;
+      // The editor is gone then: put the focus on the order's row.
+      if (done) editRef(false, "toggle");
+    };
+    on("ref-save", saveRef);
+    const refInput = item.querySelector('[data-a="ref-input"]');
+    if (refInput) {
+      refInput.addEventListener("input", () => { if (this._refs.has(num)) this._refs.get(num).text = refInput.value; });
+      refInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); saveRef(); }
+        else if (e.key === "Escape") { e.preventDefault(); editRef(false, "ref"); }
+      });
+    }
+    const refCarrier = item.querySelector('[data-a="ref-carrier"]');
+    if (refCarrier) {
+      refCarrier.addEventListener("change", () => { if (this._refs.has(num)) this._refs.get(num).carrier = refCarrier.value; });
+    }
     const code = (mode, focus) => {
       mode ? this._code.set(num, mode) : this._code.delete(num);
       this._pendingFocus = { number: num, a: focus };
@@ -860,13 +932,14 @@ class ParcelTrackerCard extends HTMLElement {
       const open = this._open.has(a.number);
       const noteMsg = open ? keyNote(a, s) : null;
       const note = noteMsg ? `<div class="detail note">${esc(noteMsg)}</div>` : "";
-      const events = (a.events || []).map((e) => `${fmtDateTime(e.timestamp)} · ${esc(e.text)}${e.location ? " · " + esc(e.location) : ""}`).join("<br>");
+      // One block per event: a long text wraps indented, so each event's start stands out.
+      const events = (a.events || []).map((e) => `<div class="ev">${fmtDateTime(e.timestamp)} · ${esc(e.text)}${e.location ? " · " + esc(e.location) : ""}</div>`).join("");
       item.innerHTML = `
         <button type="button" class="row-toggle" aria-expanded="${open ? "true" : "false"}" data-number="${esc(a.number)}" data-a="toggle">
           <span class="top"><span class="name">${this._icon(a.carrier)}<span>${esc(a.name || a.number)}</span></span>${right}<span class="chev" aria-hidden="true"></span></span>
         </button>
         <div class="sub">${sub}</div>${bar}${stale}
-        ${open ? `<div class="detail">${events || "Noch keine Ereignisse"}</div>${note}${this._codeHtml(a)}${this._track17Html(a, s, t17)}${this._actionsHtml(a)}` : ""}`;
+        ${open ? `<div class="detail">${events || "Noch keine Ereignisse"}</div>${this._refHtml(a, s)}${note}${this._codeHtml(a)}${this._track17Html(a, s, t17)}${this._actionsHtml(a)}` : ""}`;
       item.querySelector(".row-toggle").addEventListener("click", () => {
         if (open) {
           this._open.delete(a.number);

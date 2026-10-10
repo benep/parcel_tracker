@@ -174,7 +174,12 @@
     "track17_quota": {"message": "Your 17track quota is used up."},
     "track17_auth": {"message": "17track rejected the API key. Check it in the Parcel Tracker options."},
     "track17_unavailable": {"message": "Couldn't reach 17track. Try again later."},
-    "track17_not_possible": {"message": "This parcel can't be sent to 17track (delivered, or no carrier number yet)."}
+    "track17_not_possible": {"message": "This parcel can't be sent to 17track (delivered, or no carrier number yet)."},
+    "not_an_order": {"message": "Only an Amazon or eBay order can take a tracking number."},
+    "tracking_set": {"message": "This order already has a tracking number."},
+    "tracking_in_use": {"message": "This tracking number already belongs to another order."},
+    "carrier_required": {"message": "The carrier of this number can't be told for sure. Choose the carrier."},
+    "not_mergeable": {"message": "This parcel can't be merged with an order: it is an order itself, or tracked via 17track alone."}
   },
   "entity": {
     "sensor": {
@@ -248,6 +253,15 @@
       "name": "Track via 17track",
       "description": "Send a parcel to 17track to add place, time window and history. Uses 1 of your 17track numbers.",
       "fields": {"number": {"name": "Tracking number", "description": "Parcel from the list."}}
+    },
+    "set_tracking_number": {
+      "name": "Set tracking number",
+      "description": "Give an Amazon or eBay order its carrier's tracking number. A parcel already tracked under that number is merged into the order.",
+      "fields": {
+        "number": {"name": "Order", "description": "Order from the list (AMZ… or EBAY…)."},
+        "tracking_number": {"name": "Tracking number", "description": "The carrier's number, as printed, spaces allowed."},
+        "carrier": {"name": "Carrier", "description": "auto, dhl, dpd, gls, hermes or ups."}
+      }
     }
   }
 }

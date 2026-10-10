@@ -52,7 +52,7 @@ from .const import (
     SELECTABLE_CARRIERS,
     entry_country,
 )
-from .coordinator import ParcelCoordinator
+from .coordinator import ParcelCoordinator, TrackingRejected
 from .detect import UnsupportedNumber
 from .lovelace_resource import async_ensure_resource
 from .mail.imap import MailboxClient
@@ -214,6 +214,18 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         except ValueError as err:
             raise _err("track17_not_possible") from err
 
+    async def set_tracking_number(call: ServiceCall) -> None:
+        try:
+            await _coordinator(hass).async_set_tracking(
+                call.data["number"], call.data["tracking_number"], call.data["carrier"]
+            )
+        except KeyError as err:
+            raise _err("not_tracked") from err
+        except (UnsupportedNumber, TrackingRejected) as err:
+            raise _err(err.reason) from err
+        except ValueError as err:
+            raise _err("unknown_carrier") from err
+
     number = vol.All(cv.string, vol.Length(min=1))
     hass.services.async_register(
         DOMAIN, "add_parcel", add,
@@ -238,6 +250,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.services.async_register(
         DOMAIN, "track_17track", track_17track,
         schema=vol.Schema({vol.Required("number"): number}),
+    )
+    hass.services.async_register(
+        DOMAIN, "set_tracking_number", set_tracking_number,
+        schema=vol.Schema({
+            vol.Required("number"): number,
+            vol.Required("tracking_number"): number,
+            vol.Optional("carrier", default=CARRIER_AUTO): vol.In(
+                [CARRIER_AUTO, *SELECTABLE_CARRIERS]
+            ),
+        }),
     )
     return True
 

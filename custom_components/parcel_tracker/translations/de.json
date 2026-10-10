@@ -174,7 +174,12 @@
     "track17_quota": {"message": "Das 17track-Kontingent ist erschöpft."},
     "track17_auth": {"message": "17track hat den API-Key abgelehnt. Prüf ihn in den Optionen von Paket Tracker."},
     "track17_unavailable": {"message": "17track ist gerade nicht erreichbar. Versuch es später noch einmal."},
-    "track17_not_possible": {"message": "Dieses Paket lässt sich nicht an 17track schicken (zugestellt oder noch keine Sendungsnummer)."}
+    "track17_not_possible": {"message": "Dieses Paket lässt sich nicht an 17track schicken (zugestellt oder noch keine Sendungsnummer)."},
+    "not_an_order": {"message": "Eine Sendungsnummer lässt sich nur einer Amazon- oder eBay-Bestellung hinzufügen."},
+    "tracking_set": {"message": "Diese Bestellung hat schon eine Sendungsnummer."},
+    "tracking_in_use": {"message": "Diese Sendungsnummer gehört schon zu einer anderen Bestellung."},
+    "carrier_required": {"message": "Der Carrier dieser Nummer lässt sich nicht sicher erkennen. Wähl den Carrier aus."},
+    "not_mergeable": {"message": "Dieses Paket lässt sich nicht mit einer Bestellung zusammenführen: Es ist selbst eine Bestellung oder läuft nur über 17track."}
   },
   "entity": {
     "sensor": {
@@ -248,6 +253,15 @@
       "name": "Über 17track verfolgen",
       "description": "Schickt ein Paket an 17track, um Ort, Zeitfenster und Verlauf zu ergänzen. Verbraucht 1 deiner 17track-Nummern.",
       "fields": {"number": {"name": "Sendungsnummer", "description": "Paket aus der Liste."}}
+    },
+    "set_tracking_number": {
+      "name": "Sendungsnummer hinzufügen",
+      "description": "Gibt einer Amazon- oder eBay-Bestellung die Sendungsnummer des Carriers. Ein Paket, das schon unter dieser Nummer in der Liste steht, wird mit der Bestellung zusammengeführt.",
+      "fields": {
+        "number": {"name": "Bestellung", "description": "Bestellung aus der Liste (AMZ… oder EBAY…)."},
+        "tracking_number": {"name": "Sendungsnummer", "description": "Nummer des Carriers, wie aufgedruckt, Leerzeichen erlaubt."},
+        "carrier": {"name": "Carrier", "description": "auto, dhl, dpd, gls, hermes oder ups."}
+      }
     }
   }
 }

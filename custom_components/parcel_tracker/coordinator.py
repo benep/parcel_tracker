@@ -76,6 +76,7 @@ from .const import (
     NOTIFY_APP_SERVICE_PREFIX,
     NOTIFY_SERVICE_PREFIX,
     OPTIONAL_API_CARRIERS,
+    SHOP_CARRIERS,
     TICK,
     TRACK17_CARRIER_CODES,
     TRACK17_FIRST_POLL,
@@ -86,7 +87,7 @@ from .const import (
 )
 from .detect import candidates, normalize
 from .mail import OTHER_DOMAIN, forwarded_original, known_sender_domain, parse_mail
-from .mail.apply import Change, apply_update, close_unconfirmed, fold_delivered
+from .mail.apply import Change, apply_update, close_unconfirmed, fold_delivered, fold_parcel
 from .mail.base import MailResult, is_forwarded, sender, sent_at
 from .mail.imap import ImapAuthError, ImapUnavailable, MailboxClient
 from .models import (
@@ -95,6 +96,7 @@ from .models import (
     Parcel,
     ParcelStatus,
     TrackingResult,
+    all_events,
     carrier_name,
 )
 from .notification import build_notification, notification_tag, service_name
@@ -110,6 +112,14 @@ NOTIFY_TIMEOUT = 30
 # What an "Automatisch" parcel shows when no carrier asked knows its number (or DHL has
 # no key): only then GLS gets its one-time question about 12 digits (see _gls_probe).
 _NO_CARRIER_ERRORS = frozenset({"missing_key", "not_found", "carrier_not_found"})
+
+
+class TrackingRejected(Exception):
+    """A shop order cannot take this carrier number; ``reason`` is the translation key."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass
@@ -814,6 +824,9 @@ class ParcelCoordinator(DataUpdateCoordinator[dict[str, Parcel]]):
                 eta_from=known.eta_from,
                 eta_to=known.eta_to,
             )
+        if parcel.carrier in SHOP_CARRIERS and known is not None:
+            # An order with a carrier number: what the shop told stays in the history.
+            result = replace(result, events=all_events(result.events, known.events))
         # 17track only fills what the carrier left empty (place, day/window, history).
         result = with_track17(result, parcel.track17_result)
         if result.status is ParcelStatus.DELIVERED:
@@ -1176,7 +1189,7 @@ class ParcelCoordinator(DataUpdateCoordinator[dict[str, Parcel]]):
         """A carrier without own connection: adding it registers it at 17track first."""
         self._t17_client()
         async with self._lock:
-            if self.store.get(number) is not None:
+            if self.store.get(number) is not None or self._carried_by(number) is not None:
                 raise DuplicateParcel(number)  # before registering: nothing spent
             code = await self._register17(number, None)
             now = dt_util.utcnow()
@@ -1264,7 +1277,7 @@ class ParcelCoordinator(DataUpdateCoordinator[dict[str, Parcel]]):
             last_change_at=now,
         )
         async with self._lock:
-            if self._gls_twin(parcel) is not None:
+            if self._gls_twin(parcel) is not None or self._carried_by(norm) is not None:
                 raise DuplicateParcel(norm)
             self.store.add(parcel)  # raises DuplicateParcel
             if (
@@ -1313,6 +1326,84 @@ class ParcelCoordinator(DataUpdateCoordinator[dict[str, Parcel]]):
             ),
             None,
         )
+
+    def _carried_by(self, number: str) -> Parcel | None:
+        """The shop order that is asked about under this carrier number (``tracking_ref``)."""
+        short = gls_number(number)  # GLS: typed in with the check digit, stored without
+        return next(
+            (
+                p
+                for p in self.store.parcels.values()
+                if p.tracking_ref == number
+                or (p.tracking_carrier == "gls" and p.tracking_ref == short)
+            ),
+            None,
+        )
+
+    async def async_set_tracking(self, number: str, tracking_number: str, carrier: str) -> Parcel:
+        """Give a shop order its carrier number on explicit request.
+
+        A parcel tracked under that number already is folded into the order (see
+        ``fold_parcel``): one entry is left, the order. Otherwise the order is asked about
+        under the number from now on, right away for the first time.
+
+        The carrier is always known afterwards. "Automatisch" takes the parcel's carrier,
+        or the one carrier the form of the number is sure for; nothing finds out an
+        order's carrier later (no DHL fallback, no GLS question).
+        """
+        order = self.store.parcels[normalize(number)]  # KeyError: not tracked
+        norm = normalize(tracking_number)
+        keys = candidates(norm, self.carriers)  # raises UnsupportedNumber
+        chosen = None if carrier == CARRIER_AUTO else carrier
+        if chosen is None:
+            sure = {key for key in keys if self.carriers[key].matches(norm) is Match.SURE}
+            if UpsCarrier.matches(norm) is Match.SURE:
+                sure.add("ups")  # also while UPS is not set up: then mails tell its status
+            chosen = sure.pop() if len(sure) == 1 else None
+        elif chosen not in self.carriers and chosen not in OPTIONAL_API_CARRIERS:
+            raise ValueError("unknown_carrier")
+        # Everything is checked under the lock: a poll or a mail may change the parcels
+        # while this call waits.
+        async with self._lock:
+            if self.store.get(order.number) is not order:
+                raise KeyError(order.number)  # removed meanwhile
+            if order.carrier not in SHOP_CARRIERS:
+                raise TrackingRejected("not_an_order")
+            if order.tracking_ref is not None:
+                raise TrackingRejected("tracking_set")
+            if self._carried_by(norm) is not None:
+                raise TrackingRejected("tracking_in_use")
+            parcel = self.store.get(norm)
+            if parcel is None and chosen == "gls":
+                parcel = self._gls_other_form(norm)
+            if parcel is not None and parcel.carrier in (*SHOP_CARRIERS, CARRIER_OTHER):
+                # Another order, or shown from 17track alone (an order asks a carrier).
+                raise TrackingRejected("not_mergeable")
+            asked = parcel is not None and parcel.carrier is not None
+            if not asked and chosen is None:
+                raise TrackingRejected("carrier_required")
+            if parcel is not None:
+                told = self._announced.pop(parcel.number, None)
+                if fold_parcel(self.store.parcels, order, parcel) and told is not None:
+                    self._announced[order.number] = told  # still ahead of the carrier
+                order.tracking_carrier = order.tracking_carrier or chosen
+            else:
+                order.tracking_ref, order.tracking_carrier = norm, chosen
+            if order.tracking_carrier == "gls" and not order.track17:
+                # The form GLS mails name; a 17track registration keeps its number.
+                order.tracking_ref = gls_number(order.tracking_ref)
+            if not asked and order.status is not ParcelStatus.DELIVERED:
+                # Nobody asked this carrier about the number yet.
+                now = dt_util.utcnow()
+                order.last_change_at = now
+                order.next_poll_at = None
+                if order.tracking_carrier in OPTIONAL_API_CARRIERS and not self._pollable(order):
+                    order.last_error = "missing_key"  # as for a parcel added by hand
+                else:
+                    await self._poll_safely(order, now)
+            await self.store.async_save()
+            self.async_set_updated_data(dict(self.store.parcels))
+        return order
 
     async def async_remove(self, number: str) -> None:
         async with self._lock:  # not while a refresh or a registration works on the parcels

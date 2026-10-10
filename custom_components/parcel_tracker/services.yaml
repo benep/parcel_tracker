@@ -38,3 +38,18 @@ track_17track:
       required: true
       selector:
         text:
+set_tracking_number:
+  fields:
+    number:
+      required: true
+      selector:
+        text:
+    tracking_number:
+      required: true
+      selector:
+        text:
+    carrier:
+      default: auto
+      selector:
+        select:
+          options: ["auto", "dhl", "dpd", "gls", "hermes", "ups"]
