@@ -38,7 +38,8 @@ tracking number stay, a number in brackets is read like one without them, the sa
 becomes the same
 replacement in every mail of a run, a number of ten digits or more written in groups with
 spaces, tabs, dots or dashes keeps its groups, as does an international number, and a
-tracking number that stands only in a link or in the text of an image is kept as a marked
+tracking or order number that stands only in a link (also in the link a redirect carries
+percent-encoded) or in the text of an image is kept as a marked
 line "[Nummer nur im Link oder Bildtext: ...]"), drop-off places and permissions, salutations, recipient
 address blocks ("PLZ Ort", "Ort, PLZ", "ORT BUNDESLAND PLZ"), AliExpress's block below
 "Versand nach" (every line up to the one with the name and the phone number, at most twelve;
@@ -515,14 +516,16 @@ _T_IN_GROUPS = re.compile(rf"{_T_S10_GROUPED}|{_T_GROUPED_LABELLED}")
 _T_DIGIT_GAP = re.compile(
     r"(?<=[0-9A-Z])(?i:&nbsp;|&#160;|&#xa0;|[\xa0\u2007\u2009\u202f])(?=[0-9A-Z])"
 )
-# Tracking numbers in a link or in the text of an image: the known forms, or the value of a
-# parameter that names a parcel.
+# Tracking and order numbers in a link or in the text of an image: the known forms, or the
+# value of a parameter that names a parcel or an order ("tradeOrderId" of AliExpress).
 _T_HIDDEN = re.compile(
     r"(?<![A-Za-z0-9])(?:00340\d{15}|JJD\d{12,22}|1Z[0-9A-Z]{16}|H\d{19}|[A-Z]{2}\d{9}[A-Z]{2})"
     r"(?![A-Za-z0-9])"
     r"|(?i:(?:piececode|idc|tracknum|tracking_?(?:number|no|id|code)|parcel_?(?:number|no|id)"
-    r"|sendungsnummer|paketnummer)=)(?P<value>[A-Za-z]{0,4}\d{8,30}[A-Za-z]{0,2})(?![A-Za-z0-9])"
+    r"|sendungsnummer|paketnummer|order_?(?:id|number|no|nr)|bestell(?:nummer|nr))=)"
+    r"(?P<value>[A-Za-z]{0,4}\d{8,30}[A-Za-z]{0,2})(?![A-Za-z0-9])"
 )
+_T_PERCENT = re.compile(r"%([0-7][0-9A-Fa-f])")
 _T_HIDDEN_NOTE = "[Nummer nur im Link oder Bildtext: {}]"
 _T_HIDDEN_MARK = re.compile("\x00([^\x00]*)\x00")
 _T_GENERIC = re.compile(
@@ -766,8 +769,14 @@ _T_SUBJECT_NAMES = (
 
 
 def _t_hidden(text):
-    """The tracking numbers a link or an image text carries."""
-    return [match.group("value") or match.group(0) for match in _T_HIDDEN.finditer(text)]
+    """The tracking and order numbers a link or an image text carries, also in a link that a
+    redirect link carries percent-encoded (once or twice)."""
+    texts = [text]
+    for _ in range(2):
+        texts.append(_T_PERCENT.sub(lambda match: chr(int(match.group(1), 16)), texts[-1]))
+    found = (m.group("value") or m.group(0) for t in dict.fromkeys(texts)
+             for m in _T_HIDDEN.finditer(t))
+    return list(dict.fromkeys(found))
 
 
 class _TText(_Text):

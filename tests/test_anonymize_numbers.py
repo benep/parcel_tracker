@@ -349,3 +349,37 @@ def test_letters_of_a_random_token_are_still_invented(tmp_path, token, letters):
         [found] = re.findall(r"Sitzung ([A-Za-z0-9]+) läuft", text)
         assert len(found) == len(token) and not found.startswith(letters)
         assert token not in text
+
+
+# ----- order numbers in a link, numbers in the link a redirect carries -----
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "https://www.aliexpress.example/p/tracking/index.html?tradeOrderId=3012345678901234&x=1",
+        "https://shop.example/konto?order_id=3012345678901234",
+        "https://shop.example/konto?Bestellnummer=3012345678901234",
+        # a redirect: the link with the number is a percent-encoded value, once or twice
+        "https://klick.example/r?u=https%3A%2F%2Fshop.example%2Fk%3ForderId%3D3012345678901234",
+        "https://klick.example/r?u=https%253A%252F%252Fshop.example%252Fk%253ForderId%253D"
+        "3012345678901234%2526x%253D1",
+    ],
+)
+def test_order_number_only_in_a_link_is_noted_as_an_invented_number(tmp_path, href):
+    [(plain, markup)] = _run(tmp_path, _mail(href=href))
+    for text in (plain, markup):
+        [invented] = NOTE.findall(text)  # once, although three links carry it
+        assert re.fullmatch(r"\d{16}", invented) and invented != "3012345678901234"
+        assert "3012345678901234" not in text
+    assert NOTE.findall(plain) == NOTE.findall(markup)
+
+
+def test_a_number_of_another_parameter_is_no_order_number(tmp_path):
+    # (a shop's own id of a shipment is neither an order number nor a tracking number)
+    href = (
+        "https://shop.example/konto?kunde=3012345678901234&utm_id=4012345678901234"
+        "&orderingShipmentId=5012345678901234"
+    )
+    [(plain, markup)] = _run(tmp_path, _mail(href=href))
+    assert not NOTE.search(plain + markup)
+    assert "3012345678901234" not in plain + markup
