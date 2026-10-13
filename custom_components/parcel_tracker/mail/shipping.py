@@ -15,6 +15,7 @@ from .base import (
     company_name,
     domain_of,
     find_numbers,
+    html_body_text,
     html_text,
     is_forwarded,
     sender,
@@ -26,6 +27,8 @@ from .base import (
 
 DHL_SENDER = "noreply@dhl.de"
 DHL_DOMAIN = "dhl.de"  # every sender there (also paketankuendigung@dhl.de) is DHL
+DHL_COM_DOMAIN = "dhl.com"  # the online postage shop
+DHL_POSTAGE_SENDER = "noreply@dhl.com"
 UPS_SENDER = "pkginfo@ups.com"
 AMAZON_DHL_NAME = "Amazon-Sendung (DHL)"
 # Shops and carriers we know: only the display name of such a sender is looked at as a
@@ -50,6 +53,13 @@ _DHL_S10 = re.compile(r"(?<![A-Za-z0-9])([A-Z]{2}\d{9}DE)(?![A-Za-z0-9])")
 # look like that): read only in DHL's own mails and only right behind its label, which may
 # stand in the table cell or on the line before the number.
 _DHL_SHORT = re.compile(r"\bSendungsnummer\s*:?\s*(\d{12})(?!\d)")
+# One's own shipment: the receipt of a Packstation ("Einlieferungsbeleg: Ihr Versand an der
+# Packstation", "Digitaler Einlieferungsbeleg für Ihr DHL Paket") says it was handed in.
+_DHL_RECEIPT = re.compile(r"\bEinlieferungsbeleg\b", re.IGNORECASE)
+# ... and the online postage shop at dhl.com confirms the labels somebody bought.
+_POSTAGE = re.compile(r"\bOnline\s+Frankierung\b", re.IGNORECASE)
+OWN_SHIPMENT_NAME = "Versand (DHL)"
+HANDED_IN_TEXT = "Eingeliefert"
 # DHL's newer layout leaves HTML table markup in its text/plain part.
 _MARKUP = re.compile(r"<(?:table|tr|td|p|div|br|span)\b", re.IGNORECASE)
 # "Ihre <Shop> Sendung ist unterwegs" / "… kommt heute …" / "… wurde zugestellt" / "… wird
@@ -106,6 +116,12 @@ def _dhl_status(subj: str) -> tuple[ParcelStatus | None, int | None]:
     return (ParcelStatus.IN_TRANSIT if "sendung" in lower else None), None
 
 
+def _dhl_all_numbers(text: str) -> list[str]:
+    """Every number of a mail that lists several shipments, each once, whatever its form."""
+    numbers = [n for carrier, n in find_numbers(text) if carrier == "dhl"]
+    return list(dict.fromkeys([*numbers, *_DHL_S10.findall(text), *_DHL_SHORT.findall(text)]))
+
+
 def parse_dhl_mail(msg: EmailMessage) -> list[MailUpdate]:
     """DHL notification: number, status, day or today's window, the shop the subject names.
 
@@ -126,8 +142,13 @@ def parse_dhl_mail(msg: EmailMessage) -> list[MailUpdate]:
     if _MARKUP.search(text):
         text = html_text(text)
     sent = sent_at(msg)
-    numbers = [n for carrier, n in find_numbers(text) if carrier == "dhl"]
-    numbers = numbers or _DHL_S10.findall(text) or _DHL_SHORT.findall(text)
+    receipt = _DHL_RECEIPT.search(subj) is not None
+    if receipt:
+        # (a receipt lists every parcel handed in; the HTML part names them all)
+        numbers = _dhl_all_numbers(f"{text}\n{html_body_text(msg)}")
+    else:
+        numbers = [n for carrier, n in find_numbers(text) if carrier == "dhl"]
+        numbers = (numbers or _DHL_S10.findall(text) or _DHL_SHORT.findall(text))[:1]
     if not numbers:
         return []
     amazon = "amazon sendung" in f"{subj}\n{text}".lower()
@@ -141,6 +162,8 @@ def parse_dhl_mail(msg: EmailMessage) -> list[MailUpdate]:
         if not is_forwarded(msg):
             title = company_name(shop)
     status, ahead = _dhl_status(subj)
+    if receipt:
+        title, shop_name, status = OWN_SHIPMENT_NAME, None, ParcelStatus.IN_TRANSIT
     eta_date = eta_from = eta_to = delivered_at = None
     postponed = False
     soon = status is ParcelStatus.OUT_FOR_DELIVERY and _DHL_SOON.search(subj.lower())
@@ -162,7 +185,7 @@ def parse_dhl_mail(msg: EmailMessage) -> list[MailUpdate]:
         delivered_at = sent
     return [
         MailUpdate(
-            number=numbers[0],
+            number=number,
             carrier="dhl",
             status=status,
             sent_at=sent,
@@ -173,8 +196,29 @@ def parse_dhl_mail(msg: EmailMessage) -> list[MailUpdate]:
             delivered_at=delivered_at,
             shop=shop_name,
             postponed=postponed,
-            status_text=SOON_TEXT if soon else None,
+            status_text=HANDED_IN_TEXT if receipt else SOON_TEXT if soon else None,
+            own=receipt,
         )
+        for number in numbers
+    ]
+
+
+def parse_dhl_postage_mail(msg: EmailMessage) -> list[MailUpdate]:
+    """The online postage shop at dhl.com ("Auftragsbestätigung Ihrer Online Frankierung").
+
+    One's own shipments, one per "Sendungsnummer:" of a label, announced; a stamp for a
+    letter has no number and gives nothing. The recipients of the labels are never read.
+    """
+    if not _POSTAGE.search(subject(msg)):
+        return []
+    # (the text part names no number, the HTML part does)
+    text = f"{body_text(msg)}\n{html_body_text(msg)}"
+    sent = sent_at(msg)
+    return [
+        MailUpdate(
+            number, "dhl", ParcelStatus.PRE_TRANSIT, sent, title=OWN_SHIPMENT_NAME, own=True
+        )
+        for number in _dhl_all_numbers(text)
     ]
 
 

@@ -791,7 +791,8 @@ def _apply_tracking(parcels: dict[str, Parcel], update: MailUpdate, now: datetim
             ),
             None,
         )
-    if target is None and update.status is not None:
+    # (one's own shipment belongs to no order: see ``MailUpdate.own``)
+    if target is None and update.status is not None and not update.own:
         # "Zugestellt" without a day of its own: the mail's day is the day of delivery,
         # and the order's days must fit it like for a parcel folded in afterwards.
         delivered = update.status is ParcelStatus.DELIVERED and not update.eta_date
@@ -806,6 +807,8 @@ def _apply_tracking(parcels: dict[str, Parcel], update: MailUpdate, now: datetim
             return Change(target, old, False)
     if target is None:
         target = Parcel(number, update.carrier, "mail", name, now, now)
+        # (... so nobody asks later whether its delivery closes one: ``fold_delivered``)
+        target.order_checked = update.own
         parcels[number] = target
         _forward(target, update, now)
         # A first status is no news - but a delivery whose mail names a shop or a company
