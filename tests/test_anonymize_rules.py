@@ -624,3 +624,198 @@ def test_a_long_run_gets_longer_numbers_and_its_results_are_cleared_too(tmp_path
         "001_paketflitzer.example.eml", "002_paketflitzer.example.eml", "1001_fremd.eml",
     ]
     assert (out / "1001_fremd.eml").read_bytes() == foreign
+
+
+# ----- --keep-filenames: the results are named like their sources -----
+
+def _named(tmp_path: Path, names) -> Path:
+    src = tmp_path / "mails"
+    src.mkdir()
+    for i, name in enumerate(names):
+        (src / name).write_bytes(_mail(SHOP, f"Paket {i}", "Hallo Jörg Probst,\nunterwegs.\n"))
+    return src
+
+
+def test_keep_filenames_writes_each_mail_under_the_name_of_its_source(tmp_path):
+    names = ["2023-07-18_0802.eml", "2023-07-18_0802_2.eml", "Dein Paket.EML"]
+    src = _named(tmp_path, names)
+    before = {name: (src / name).read_bytes() for name in names}
+    done = _call(src, "--keep-filenames", "--name", "Jörg Probst", "--out", tmp_path / "ziel")
+    assert done.returncode == 0, done.stderr
+    out = tmp_path / "ziel"
+    assert sorted(p.name for p in out.iterdir()) == names
+    for number, name in enumerate(names, 1):
+        msg = email.message_from_bytes((out / name).read_bytes(), policy=policy.default)
+        assert str(msg["Message-ID"]) == f"<beispiel-{number:03d}@example.org>"
+        assert str(msg["Subject"]) == f"Paket {number - 1}"
+        _absent(msg, "probst")
+        assert (src / name).read_bytes() == before[name]
+    # the names of the sources may be private: no word about an upload, a warning instead
+    assert "nicht zum Hochladen" in done.stdout
+    assert "WICHTIG" not in done.stdout
+
+
+def test_keep_filenames_writes_a_second_run_over_the_first(tmp_path):
+    """The results of two runs stand under the same names: a rule change shows as a diff."""
+    src = _named(tmp_path, ["a.eml", "b.eml"])
+    out = src / "anonymisiert"
+    assert _call(src, "--ohne-angaben", "--keep-filenames").returncode == 0
+    (out / "a.eml").write_bytes(b"alt")
+    assert _call(src, "--ohne-angaben", "--keep-filenames").returncode == 0
+    assert sorted(p.name for p in out.iterdir()) == ["a.eml", "b.eml"]
+    assert b"Message-ID: <beispiel-001@example.org>" in (out / "a.eml").read_bytes()
+
+
+def test_keep_filenames_refuses_the_zip_and_two_mails_with_one_name(tmp_path):
+    src = _named(tmp_path, ["a.eml"])
+    other = tmp_path / "mehr"
+    other.mkdir()
+    (other / "A.eml").write_bytes(_mail(SHOP, "Paket", "Unterwegs.\n"))
+    for args, message in (
+        ((src, "--zip"), "nicht zusammen mit --zip"),
+        ((src, other, "--out", tmp_path / "ziel"), "zwei der Mails heißen gleich"),
+    ):
+        done = _call(*args, "--ohne-angaben", "--keep-filenames")
+        assert done.returncode == 2 and message in done.stderr, done.stderr
+        assert done.stdout == ""
+    assert not (src / "anonymisiert").exists() and not (tmp_path / "ziel").exists()
+
+
+# ----- names that are learnt without any given value: closing formula, private sender -----
+
+@pytest.mark.parametrize(
+    "closing",
+    [
+        "Viele Grüße\nLena Holzer\n",
+        "Kind regards / Viele Grüße\nLena Holzer\n",
+        "Mit freundlichen Grüßen\n\nLena Holzer\n",
+        "> Liebe Grüße,\n> Lena Holzer\n",
+        "MfG\nLena Holzer\n",
+    ],
+)
+def test_name_below_a_closing_formula_is_replaced_as_a_whole_in_every_mail(tmp_path, closing):
+    raw = _mail(SHOP, "Ihre Frage", f"Das Paket ist unterwegs.\n\n{closing}")
+    other = _mail(
+        SHOP, "Paket unterwegs",
+        "Holzer Dübel wurde versandt.\nRückfragen beantwortet Lena Holzer.\n\n"
+        "Viele Grüße\nIhr Paketflitzer Team\n",
+    )
+    _, [(_, first), (_, second)] = _run(tmp_path, [raw, other])
+    assert closing.replace("Lena Holzer", "Max Mustermann") in _text(first)
+    # only the whole name: the surname of a shop's employee may be a brand in another mail
+    assert "Holzer Dübel wurde versandt.\nRückfragen beantwortet Max Mustermann.\n" in _text(second)
+    # "Liebe Grüße," greets nobody: the word of the closing formula is no name
+    assert "Viele Grüße\nIhr Paketflitzer Team\n" in _text(second)
+
+
+@pytest.mark.parametrize(
+    "closing",
+    [
+        "Viele Grüße\nIhr Paketflitzer Team\n",
+        "Mit freundlichen Grüßen\nIhr Sendungsstatus\n",
+        "Viele Grüße\nLena vom Holzwurm Webshop Team\n",
+        "Viele Grüße\nFiliale\nHauptstraße\n",
+        "Viele Grüße aus dem Lager, wo Ihr Paket gerade für den Versand gepackt wird\nHolz Wurm\n",
+    ],
+)
+def test_a_team_or_a_company_below_a_closing_formula_stays(tmp_path, closing):
+    raw = _mail(SHOP, "Paket unterwegs", f"Ihr Paket ist unterwegs.\n\n{closing}")
+    other = _mail(SHOP, "Zugestellt", "Der Holz Wurm hat das Paket der Filiale übergeben.\n")
+    _, [(_, first), (_, second)] = _run(tmp_path, [raw, other])
+    assert closing in _text(first)
+    assert "Der Holz Wurm hat das Paket der Filiale übergeben." in _text(second)
+
+
+FORWARDED = (
+    "-------- Weitergeleitete Nachricht --------\n"
+    "Von: DHL <noreply@dhl.de>\nGesendet: Dienstag, 18. Juli 2023 08:00\n{to}"
+    "Betreff: Ihr Paket kommt\n\nGuten Tag,\n\nIhr Paket wurde von Probst angenommen.\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("sender", "subject", "text"),
+    [
+        # the address carries the name: the display name is not learnt as a private sender
+        ("Jörg Probst <joerg.probst@gmx.de>", "Paket", "Wo bleibt das Paket für Probst?\n"),
+        ("Jörg Probst <joerg@probst.example>", "Re: Ihre Frage", "Probst wartet noch.\n"),
+        ("Jörg Probst <joerg@probst.example>", "WG: Ihr Paket kommt", FORWARDED.format(to="")),
+        ("Jörg Probst <jp1987@gmx.de>", "WG: Ihr Paket kommt", FORWARDED.format(to="")),
+        # no display name: the name stands only in the quoted header of the forwarded mail
+        ("jp1987@gmx.de", "WG: Ihr Paket kommt",
+         FORWARDED.format(to="An: Jörg Probst <jp1987@gmx.de>\n")),
+        ("jp1987@gmx.de", "WG: Ihr Paket kommt",
+         FORWARDED.format(to='An: "Probst, Jörg" <jp1987@gmx.de>; Erika Sonne <e@gmx.de>\n')),
+    ],
+)
+def test_person_as_sender_or_quoted_recipient_is_learnt_with_each_word(
+    tmp_path, sender, subject, text,
+):
+    other = _mail(SHOP, "Zugestellt", "Abgeholt von Probst.\nJörg hat unterschrieben.\n")
+    _, [(_, first), (_, second)] = _run(tmp_path, [_mail(sender, subject, text), other])
+    _absent(first, "probst", "jörg", "joerg")
+    assert "Abgeholt von Mustermann.\nMax hat unterschrieben.\n" in _text(second)
+
+
+def test_person_in_the_from_header_of_a_shop_keeps_its_words(tmp_path):
+    """No mail of a person: only the whole name is a private sender, a word may be a brand."""
+    raw = _mail("Lena Holzer <versand@kleinerladen.example>", "Dein Paket", "Ist unterwegs.\n")
+    other = _mail(SHOP, "Paket unterwegs", "Holzer Dübel wurde versandt, sagt Lena Holzer.\n")
+    _, [_, (_, second)] = _run(tmp_path, [raw, other])
+    assert "Holzer Dübel wurde versandt, sagt Beispielversender.\n" in _text(second)
+
+
+# ----- the tester's own domain -----
+
+OWN_SITE = (
+    "Ihr Konto: https://www.probst-holzbau.example/kunden/4711 oder probst-holzbau.example.\n"
+    "Verfolgen: https://paketflitzer.example/track/1 oder www.paketflitzer.example.\n"
+)
+
+
+def test_domain_the_mails_were_sent_to_is_replaced_in_every_mail(tmp_path):
+    raw = _mail(SHOP, "Paket unterwegs", OWN_SITE, to="jp@probst-holzbau.example")
+    other = _mail(HERMES, "Zugestellt", "Abgegeben bei www.probst-holzbau.example.\n")
+    _, [(_, first), (_, second)] = _run(tmp_path, [raw, other])
+    assert "Ihr Konto: https://example.org/… oder example.org.\n" in _text(first)
+    # the shop's own hosts stay: the importer tells a shop by them
+    assert "https://paketflitzer.example/… oder www.paketflitzer.example.\n" in _text(first)
+    assert "Abgegeben bei example.org.\n" in _text(second)
+
+
+@pytest.mark.parametrize(
+    "to",
+    [
+        "jp1987@gmx.de",  # a provider's domain is nobody's own
+        "kunden@paketflitzer.example",  # the shop wrote to itself, the tester in blind copy
+    ],
+)
+def test_domain_of_a_provider_or_of_the_sender_is_not_the_testers_own(tmp_path, to):
+    text = "Mehr auf www.gmx.de und https://paketflitzer.example/track/1.\n"
+    _, [(_, msg)] = _run(tmp_path, [_mail(SHOP, "Paket unterwegs", text, to=to)])
+    assert "Mehr auf www.gmx.de und https://paketflitzer.example/…\n" in _text(msg)
+
+
+def test_domain_of_a_given_mail_address_is_replaced(tmp_path):
+    raw = _mail(SHOP, "Paket unterwegs", OWN_SITE, to="pakete@postfach.example")
+    _, [(_, msg)] = _run(tmp_path, [raw], "--email", "jp@probst-holzbau.example")
+    assert "Ihr Konto: https://example.org/… oder example.org.\n" in _text(msg)
+    assert "www.paketflitzer.example" in _text(msg)
+
+
+def test_web_address_in_the_signature_of_a_person_is_replaced(tmp_path):
+    signature = "Viele Grüße\nJörg Probst\njp@probst-holzbau.example\nwww.probst-holzbau.example\n"
+    raw = _mail(
+        "Jörg Probst <jp@probst-holzbau.example>", "Re: Ihre Frage",
+        f"Wo bleibt mein Paket?\n\n{signature}\nMehr dazu auf www.paketflitzer.example\n",
+        to="service@paketflitzer.example",
+    )
+    team = _mail(
+        SHOP, "Paket unterwegs",
+        "Ist unterwegs.\n\nViele Grüße\nIhr Paketflitzer Team\nwww.paketflitzer.example\n",
+    )
+    _, [(_, first), (_, second)] = _run(tmp_path, [raw, team])
+    assert "Viele Grüße\nMax Mustermann\nmax@example.org\nwww.example.org\n" in _text(first)
+    # only in the signature of a person: no line of the text, no signature of a team
+    assert "Mehr dazu auf www.paketflitzer.example\n" in _text(first)
+    assert "Viele Grüße\nIhr Paketflitzer Team\nwww.paketflitzer.example\n" in _text(second)

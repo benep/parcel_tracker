@@ -7,12 +7,16 @@ Tester mode (messages in German):
 
     python3 anonymize_mail.py <file.eml | folder> [--zip] [--out DIR] [--ohne-angaben]
         [--name "First Last"] [--street ...] [--postcode ...] [--city ...] [--phone ...]
-        [--email ...]
+        [--email ...] [--keep-filenames]
 
 Takes the mails of every sender and writes them to "anonymisiert/" next to the mails as
 001_<sender domain>.eml (a run of 1000 mails or more writes four digits or more, so the files
 sort in their order), with --zip also as paket-tracker-beispiele.zip; results of an earlier
-run in that folder (the ZIP and the NNN_*.eml files this script wrote) are removed first. A
+run in that folder (the ZIP and the NNN_*.eml files this script wrote) are removed first. With
+--keep-filenames each mail is written under the name of its source file instead, to compare
+a result with its original or the results of two runs: a file name may carry the subject, so
+these files are not meant for an upload (refused together with --zip, and if two of the
+mails have the same name), and a later run does not remove them. A
 value that no option gives is asked for on a terminal (an empty answer skips it; a stdin that
 is redirected, also from a null device that calls itself a terminal, is none). Without any
 value the call is refused (exit code 2) unless --ohne-angaben says that this is intended; then
@@ -43,9 +47,15 @@ one line where no such line follows), addresses without a label
 place" line above the order number, the names of neighbours (also "bei NAME (street) abgegeben",
 with the street in the brackets) and of the person that took the
 parcel, and senders or sellers that are no company (in the text, in the From display name and
-in the subject). What the rules find in one mail (the recipient's name with each of its words,
+in the subject), the name of a person below a closing formula ("Viele Grüße", as a whole name;
+a team or a company stays) with a web address in the lines of that signature. What the rules
+find in one mail (the recipient's name with each of its words,
 street, postcode and place, private senders, drop-off places, also the display name of the To
-header) is replaced in every mail of the run. Only From, Subject and Date are kept of the
+header, the name of a person who wrote, answered or forwarded a mail and the recipients in the
+quoted header of a forwarded mail, both with each of their words) is replaced in every mail of
+the run, as is the tester's own domain with any host in front, also in links: a domain the
+mails of shops and carriers were sent to and none of them came from (no mail provider's), or
+the domain of a given mail address. Only From, Subject and Date are kept of the
 headers; HTML parts are reduced to their text (one <p> per line, no attributes, no comments)
 and every other attachment is dropped. The replaced values are never printed. Exit codes:
 0 done, 2 wrong call.
@@ -399,7 +409,7 @@ def _evt_known(line):
 _T_USAGE = (
     'usage: anonymize_mail.py <Datei.eml | Ordner> [--zip] [--out ORDNER] [--ohne-angaben]\n'
     '           [--name "Vorname Nachname"] [--street "Straße Hausnummer"] [--postcode PLZ]\n'
-    '           [--city ORT] [--phone TELEFON] [--email MAILADRESSE]\n'
+    '           [--city ORT] [--phone TELEFON] [--email MAILADRESSE] [--keep-filenames]\n'
     '       anonymize_mail.py --fixtures SRC_DIR DST_DIR POSTCODE CITY FIRSTNAME LASTNAME'
     ' [MAILDOMAIN ...]'
 )
@@ -416,6 +426,10 @@ Macht aus gespeicherten Paketmails (.eml) anonymisierte Beispielmails für ein G
   --ohne-angaben        ausdrücklich ohne eigene Angaben arbeiten: Das Skript fragt nicht
                         und bereinigt nur allgemein. Namen und Orte können dann stehen
                         bleiben. Ohne diese Option braucht das Skript mindestens eine Angabe.
+  --keep-filenames      die Dateien heißen wie die Original-Mails statt 001_<Absender>.eml,
+                        zum Vergleichen mit dem Original. Ein Dateiname kann den Betreff
+                        enthalten: nicht zum Hochladen, deshalb nicht zusammen mit --zip.
+                        Diese Ergebnisse räumt ein späterer Lauf nicht auf.
 
 Ersetzt werden außerdem alle Mail-Adressen außer dem Absender, Telefonnummern, Links (nur
 der Servername bleibt), Sendungs-, Bestell- und andere lange Nummern (gleiche Form, erfundene
@@ -435,6 +449,7 @@ _T_OPTIONS = {
     "email": "Mail-Adresse",
 }
 _T_BARE = "--ohne-angaben"
+_T_KEEP = "--keep-filenames"
 _T_ZIP = "paket-tracker-beispiele.zip"
 _T_MAIL = "max@example.org"
 _T_PHONE = "+49 000 0000000"
@@ -712,14 +727,31 @@ _T_GREETING = (
     r"(?i:Hallo|Hi|Hey|Moin|Servus|Guten (?:Tag|Morgen|Abend)|Liebe[rs]?"
     r"|Sehr geehrte[rs]?|Dear|Hello)(?:[ \t]+(?i:Herrn?|Frau|Familie|Mr\.?|Mrs\.?|Ms\.?))?"
 )
+# "Liebe Grüße," closes a mail, it greets nobody.
+_T_NO_HELLO = r"(?!(?i:gr(?:ü|ue|u)(?:ß|ss)))"
 _T_HELLO = re.compile(
-    rf"(?m)^(?P<hello>[*_> \t]*{_T_GREETING})[ \t]+"
+    rf"(?m)^(?P<hello>[*_> \t]*{_T_GREETING})[ \t]+{_T_NO_HELLO}"
     r"(?P<name>[^\s,!:*]+(?:[ \t]+[^\s,!:*]+){0,3}?)(?P<end>[ \t]*[,!:*])"
 )
 # Without punctuation only capitalised words count: "Guten Tag Vorname Nachname".
 _T_HELLO_BARE = re.compile(
-    rf"(?m)^(?P<hello>[*_> \t]*{_T_GREETING})[ \t]+"
+    rf"(?m)^(?P<hello>[*_> \t]*{_T_GREETING})[ \t]+{_T_NO_HELLO}"
     r"(?P<name>[A-ZÄÖÜ][^\s,!:*]*(?:[ \t]+[A-ZÄÖÜ][^\s,!:*]*){0,2})(?P<end>[ \t]*)$"
+)
+# A closing formula on a line of its own, the writer's name on the next line or below one
+# empty line: "Viele Grüße\nVorname Nachname". Only a person counts (_t_person): most mails
+# close with a team or a company ("Ihr DHL Team"), and that stays. The name is replaced as a
+# whole in every mail, not each of its words: an employee's surname may be a brand elsewhere.
+_T_BYE = re.compile(
+    r"(?im)^(?P<bye>[*_> \t]*(?:(?:(?:(?:kind|best|warm)[ \t]+)?regards|best[ \t]+wishes"
+    r"|(?:[^\W\d_]+[ \t]+){0,3}gr(?:ü|ue|u)(?:ß|ss)(?:e|en)?)\b[^\n]{0,40}"
+    r"|(?:mfg|lg|vg)[ \t,!.]*)\n(?:[*_> \t]*\n)?[*_> \t]*)"
+    r"(?P<name>[^\s*_>][^\n]*?)(?P<end>[*_ \t]*)$(?P<rest>(?:\n[^\n]*\S[^\n]*){0,4})"
+)
+# A line of the signature below such a name that is a web address and nothing else.
+_T_SIGNED_WEB = re.compile(
+    r"(?im)^([*_> \t]*(?:(?:web|internet|homepage|www)[ \t]*:[ \t]*)?)"
+    r"(?:https?://)?(?:[a-z0-9äöü-]+\.)+[a-z]{2,}(?:/\S*)?[ \t]*$"
 )
 _T_NAME2 = (
     rf"(?:{_T_NAME_TOKEN.pattern})(?:[ \t]+(?:von|van|de|der|zu))?[ \t]+(?:{_T_NAME_TOKEN.pattern})"
@@ -775,9 +807,10 @@ class _TUsage(Exception):
 
 
 def _t_parse(args):
-    """(paths, out dir or None, zip?, help?, without values?, {option: [values]})."""
+    """(paths, out dir or None, zip?, help?, without values?, over the sources?,
+    {option: [values]})."""
     paths, out, pack, usage, values = [], None, False, False, {key: [] for key in _T_OPTIONS}
-    bare, i = False, 0
+    bare, keep, i = False, False, 0
     while i < len(args):
         arg = args[i]
         i += 1
@@ -795,6 +828,8 @@ def _t_parse(args):
             pack = True
         elif name == _T_BARE and not equals:
             bare = True
+        elif name == _T_KEEP and not equals:
+            keep = True
         elif name.startswith("--") and (key == "out" or key in _T_OPTIONS):
             if not equals:
                 if i >= len(args) or args[i].startswith("--"):
@@ -807,7 +842,7 @@ def _t_parse(args):
                 values[key].extend(value.split(";"))
         else:
             raise _TUsage(f"Unbekannte Option {name}")
-    return paths, out, pack, usage, bare, values
+    return paths, out, pack, usage, bare, keep, values
 
 
 def _t_variants(value, gap=r"[\s._-]*"):
@@ -974,6 +1009,10 @@ class _TScrubber:
         self.learned = {}  # text found in one mail -> its replacement in every mail
         self.words = {}  # single word of a recipient's name (lower case) -> replacement
         self.streets, self.postcodes, self.cities = set(), set(), set()
+        # Domains the mails of shops and carriers were sent to and sent from: a domain of
+        # the first kind only is the tester's own (a given mail address names one too).
+        self.sent_to = {v.rpartition("@")[2].casefold() for v in values["email"] if "@" in v}
+        self.sent_from = set()
         self._learning = False
         self._learnt = None  # compiled rules of what was learnt
         self._salt = secrets.token_hex(16)
@@ -988,10 +1027,16 @@ class _TScrubber:
             self.own.update(name.replace(old, new) for name in surnames)
 
     # ----- first pass -----
-    def learn(self, text, subject="", display="", domain="", recipients=()):
-        """Remember what the rules find in one mail; nothing is returned."""
+    def learn(self, text, subject="", display="", domain="", recipients=(), private=False,
+              delivered=()):
+        """Remember what the rules find in one mail; nothing is returned. ``private`` says
+        that the sender is a person (_t_private), ``delivered`` are the addresses the mail
+        was sent to."""
         self._learning, self._learnt = True, None
         try:
+            if not private:
+                self.sent_from.add(domain.rpartition("@")[2])
+                self.sent_to.update(address.rpartition("@")[2] for address in delivered)
             for name in recipients:
                 if "," in name:  # "Nachname, Vorname"
                     name = " ".join(reversed([part.strip() for part in name.split(",", 1)]))
@@ -1002,6 +1047,10 @@ class _TScrubber:
                 t.casefold() in domain for t in name.split() if len(t) >= 4
             ):
                 self._note(name, "Beispielversender")
+            if private and _t_person(name):
+                # A person wrote, answered or forwarded the mail: each word of the name is
+                # replaced too, also if the address carries the name.
+                self._person(name)
             for pattern, recipient in _T_SUBJECT_NAMES:
                 for match in pattern.finditer(subject):
                     if _t_person(match.group(1)):
@@ -1061,7 +1110,15 @@ class _TScrubber:
     def _rules(self):
         """The compiled rules of everything learnt, the longest first."""
         if self._learnt is None:
-            rules = [_t_street(street) for street in sorted(self.streets, key=len, reverse=True)]
+            # The tester's own domains first, with any host in front: a word of a name may
+            # be a part of one.
+            own = {d for d in self.sent_to - self.sent_from if d and d not in _T_FREEMAIL}
+            rules = [
+                (re.compile(rf"(?<![\w@.-])(?:[\w-]+\.)*{re.escape(d)}(?![\w-])", re.I),
+                 "example.org")
+                for d in sorted(own, key=len, reverse=True)
+            ]
+            rules += [_t_street(street) for street in sorted(self.streets, key=len, reverse=True)]
             for postcode in sorted(self.postcodes):
                 rules.append((re.compile(rf"(?<!\d){postcode}(?!\d)"), "12345"))
                 if postcode not in self.avoid:
@@ -1103,6 +1160,31 @@ class _TScrubber:
         titled = re.search(r"(?i)(?:Herrn?|Frau|Mr|Mrs|Ms)\.?$", match.group("hello"))
         self._person(" ".join(words), "Mustermann" if titled else "Max")
         return f"{match.group('hello')} Max Mustermann{match.group('end')}"
+
+    def _quoted_to(self, match):
+        """The recipients in the quoted header of a forwarded mail: persons with an address
+        are replaced in every mail, the line itself becomes the placeholder address."""
+        for name in re.findall(r"([^<>;]+?)[ \t]*<", match.group(0).split(":", 1)[1]):
+            name = name.strip(" \t\"',")
+            if "," in name:  # "Nachname, Vorname"
+                name = " ".join(reversed([part.strip() for part in name.split(",", 1)]))
+            if _t_person(name):
+                self._person(name)
+        return f"{match.group(1)} {_T_MAIL}"
+
+    def _bye(self, match):
+        """The writer's name below a closing formula: a person, replaced in every mail."""
+        name = match.group("name")
+        if not _t_person(name):
+            return match.group(0)
+        # Only the whole name: the surname of a shop's employee may be a brand elsewhere.
+        self._note(name, "Max Mustermann")
+        # The person's own web address in the signature, only at this place.
+        rest = _T_SIGNED_WEB.sub(r"\1www.example.org", match.group("rest"))
+        if any(found.casefold() == name.casefold() for found in self.learned):
+            # Replaced with everything learnt: a private sender keeps its own placeholder.
+            return f"{match.group('bye')}{name}{match.group('end')}{rest}"
+        return f"{match.group('bye')}Max Mustermann{match.group('end')}{rest}"
 
     def _sender(self, match):
         """A person as sender becomes a placeholder, a company stays; the address never stays."""
@@ -1263,7 +1345,8 @@ class _TScrubber:
         text = _T_DELIVERED_TO.sub(self._delivered, text)
         text = _T_HELLO.sub(self._hello, text)
         text = _T_HELLO_BARE.sub(self._hello, text)
-        text = _T_QUOTED_TO.sub(f"\\1 {_T_MAIL}", text)
+        text = _T_BYE.sub(self._bye, text)
+        text = _T_QUOTED_TO.sub(self._quoted_to, text)
         for pattern in (_T_SENDER_BLOCK, _T_SENDER_NEXT, _T_SENDER_INLINE, _T_SENDER_SAME,
                         _T_SELLER):
             text = pattern.sub(self._sender, text)
@@ -1342,16 +1425,20 @@ def _t_recipients(msg):
     return [name for name in names if name]
 
 
+def _t_delivered(msg):
+    """The addresses a mail was sent to, in lower case."""
+    headers = ("To", "Cc", "Delivered-To", "X-Original-To", "Envelope-To")
+    return re.findall(_T_ADDRESS, " ".join(_t_header(msg, name) for name in headers).lower())
+
+
 def _t_private(msg, address, scrubber, subject, text):
     """A sender that is a person: a freemail address, the recipient itself, the tester, or
     the sender of a forwarded or answered mail (subject prefix, quoted header block)."""
     if not address:
         return True
-    recipients = ("To", "Cc", "Delivered-To", "X-Original-To", "Envelope-To")
-    others = " ".join(_t_header(msg, name) for name in recipients).lower()
     return bool(
         address.rsplit("@", 1)[-1] in _T_FREEMAIL
-        or address in re.findall(_T_ADDRESS, others)
+        or address in _t_delivered(msg)
         or any(value in address for value in scrubber.own)
         or _T_FORWARD.match(subject)
         or _T_QUOTED_FROM.search(text.replace("\r\n", "\n"))
@@ -1643,13 +1730,19 @@ def _t_clear(out_dir):
 
 
 def _t_run(args):
-    paths, out_dir, pack, usage, bare, values = _t_parse(args)
+    paths, out_dir, pack, usage, bare, keep, values = _t_parse(args)
     if usage:
         print(_T_USAGE + "\n" + _T_HELP)
         return 0
     if not paths:
         raise _TUsage("Datei oder Ordner fehlt.")
     files = _t_files(paths)
+    if keep and pack:
+        raise _TUsage(f"{_T_KEEP} ist zum Vergleichen mit den Original-Mails gedacht, nicht zum"
+                      " Hochladen: nicht zusammen mit --zip.")
+    if keep and len({os.path.basename(path).lower() for path in files}) < len(files):
+        raise _TUsage(f"Mit {_T_KEEP} braucht jede Mail einen eigenen Dateinamen, zwei der Mails"
+                      " heißen gleich.")
     first = os.path.abspath(paths[0])
     if out_dir is None:
         out_dir = os.path.join(first if os.path.isdir(first) else os.path.dirname(first),
@@ -1683,9 +1776,11 @@ def _t_run(args):
     for path in files:
         try:
             mail = load(path)
+            text, subject = "\n".join(_t_texts(mail)[:2]), _t_header(mail, "Subject")
+            display, address = _t_sender(mail)
             scrubber.learn(
-                "\n".join(_t_texts(mail)[:2]), _t_header(mail, "Subject"),
-                *_t_sender(mail), _t_recipients(mail),
+                text, subject, display, address, _t_recipients(mail),
+                _t_private(mail, address, scrubber, subject, text), _t_delivered(mail),
             )
             mails.append((os.path.basename(path), mail))
         except Exception:
@@ -1706,7 +1801,7 @@ def _t_run(args):
         except Exception:  # no traceback: it could show a part of a mail
             unreadable.append(source)
             continue
-        name = f"{number}_{domain}.eml"
+        name = source if keep else f"{number}_{domain}.eml"
         with open(os.path.join(out_dir, name), "wb") as handle:
             handle.write(data)
         written.append((name, data))
@@ -1737,6 +1832,11 @@ def _t_run(args):
         print("ACHTUNG: In diesen Dateien steht noch eine der eigenen Angaben, vielleicht als")
         print("Teil eines anderen Wortes. Besonders genau lesen: " + ", ".join(doubtful))
     print()
+    if keep:
+        print(f"ACHTUNG: Mit {_T_KEEP} heißen die Dateien wie die Original-Mails. Ein Dateiname")
+        print("kann den Betreff und damit Privates enthalten. Diese Dateien sind zum Vergleichen")
+        print("mit den Originalen gedacht, nicht zum Hochladen.")
+        return 0
     print("WICHTIG: Jede Datei vor dem Hochladen selbst öffnen und durchlesen (ein Texteditor")
     print("genügt). Das Skript erkennt nicht alles: Steht noch etwas Privates drin, die Stelle")
     print("von Hand ersetzen oder die Mail weglassen" + (", danach das ZIP neu packen." if pack
