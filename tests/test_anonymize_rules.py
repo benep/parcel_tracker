@@ -467,3 +467,160 @@ def test_sender_named_in_a_carrier_sentence(tmp_path):
     assert "Auf Antrag von Holzwurm Möbel GmbH , um Sie zu informieren.\n" in text
     assert "Von: Beispielversender\n" in text
     _absent(msg, "kirschbaum", "ballermann", "donnerwetter")
+
+
+# ----- words glued together, a neighbour in front of the verb, numbers in brackets -----
+
+def _html_mail(sender: str, subject: str, markup: str) -> bytes:
+    msg = EmailMessage()
+    msg["From"] = sender
+    msg["To"] = "pakete@postfach.example"
+    msg["Subject"] = subject
+    msg["Date"] = DATE
+    msg.set_content(f"<html><body>{markup}</body></html>", subtype="html")
+    return bytes(msg)
+
+
+GIVEN = ("--name", "Jonas Meier", "--street", "Lindenweg 3", "--postcode", "80331",
+         "--city", "München")
+
+
+def test_given_name_and_street_glued_to_the_next_word_are_replaced(tmp_path):
+    """Inline elements of an HTML mail leave no space between a name and the next word."""
+    glued = _html_mail(
+        SHOP,
+        "Ihre Bestellung",
+        "<div>Herr <b>Meier</b><span>Ihre Bestellung wurde verschickt.</span></div>"
+        "<div>Lieferadresse:<b>Jonas Meier</b><span>Lindenweg 3</span><span>80331 München</span>"
+        "</div><div>Zustellung in <b>München</b><span>Deutschland</span></div>",
+    )
+    plain = _mail(
+        SHOP,
+        "Ihre Bestellung",
+        "FrauMeierIhr Paket kommt in den LindenwegHeute.\n"
+        "HERRMeier, JONAS MEIERLindenweg 3 in MÜNCHENDeutschland.\n",
+    )
+    done, [(_, first), (_, second)] = _run(tmp_path, [glued, plain], *GIVEN)
+    markup = first.get_body(("html",)).get_content()
+    assert "<p>Herr MustermannIhre Bestellung wurde verschickt.</p>" in markup
+    # (house number and postcode are one run of digits there: invented as a whole)
+    assert re.search(r"<p>Lieferadresse:Max MustermannMusterstraße \d{6} Musterstadt</p>", markup)
+    assert "<p>Zustellung in MusterstadtDeutschland</p>" in markup
+    assert "FrauMustermannIhr Paket kommt in den MusterstraßeHeute.\n" in _text(second)
+    # in capitals: the last capital of a run starts the next word
+    assert "HERRMustermann, Max MustermannMusterstraße 1 in MusterstadtDeutschland.\n" in (
+        _text(second)
+    )
+    for msg in (first, second):
+        _absent(msg, "jonas", "meier", "lindenweg", "80331", "münchen")
+    assert "steht noch eine der eigenen Angaben" not in done.stdout
+
+
+def test_learnt_name_glued_to_the_next_word_is_replaced(tmp_path):
+    known = _mail(SHOP, "Ihre Bestellung", "Hallo Jonas Meier,\n\ndanke.\n")
+    glued = _html_mail(
+        SHOP, "Ihr Paket", "<p>Herr <b>Meier</b><span>Ihre Bestellung ist da.</span></p>"
+    )
+    _, [(_, first), (_, second)] = _run(tmp_path, [known, glued])
+    assert "<p>Herr MustermannIhre Bestellung ist da.</p>" in (
+        second.get_body(("html",)).get_content()
+    )
+    for msg in (first, second):
+        _absent(msg, "jonas", "meier")
+
+
+def test_a_short_name_is_still_no_part_of_an_ordinary_word(tmp_path):
+    line = (
+        "Das Paket steht daneben, die angegebene Adresse stimmt, ANGEGEBENE AUCH, "
+        "angegebeneAdresse, Benedikt, Waldweg und der Buchenwald bleiben."
+    )
+    raw = _mail(SHOP, "Ihre Bestellung", f"Hallo Bene Wald,\n{line}\nBeneIhr Paket, HerrWald.\n")
+    _, [(_, msg)] = _run(tmp_path, [raw], "--name", "Bene Wald")
+    text = _text(msg)
+    assert line + "\n" in text
+    assert "MaxIhr Paket, HerrMustermann.\n" in text
+
+
+def test_neighbour_named_in_front_of_the_verb(tmp_path):
+    raw = _mail(
+        "DHL Paket <noreply@dhl.de>",
+        "Ihr Paket wurde zugestellt",
+        "Wir haben sie bei Nowak (Ahornallee 5) abgegeben.\n"
+        "Ihr Paket wurde bei Familie Kirschbaum abgegeben.\n"
+        "Die Sendung wurde bei Ihrem Nachbarn Ballermann abgegeben.\n"
+        "Ein Paket haben wir bei D. Donnerwetter (2. Etage) abgegeben.\n"
+        "Wir haben sie bei Ihrem Nachbarn abgegeben.\n"
+        "Wir haben sie bei der Filiale abgegeben.\n"
+        "Wir haben sie bei Hermes PaketShop (Hauptplatz 5) abgegeben.\n"
+        "Wir haben sie bei Paketshop Wolke abgegeben.\n"
+        "Bei Abholung abgegeben.\n",
+    )
+    _, [(_, msg)] = _run(tmp_path, [raw])
+    text = _text(msg)
+    for line in (
+        "Wir haben sie bei Beispielnachbar (Musterstraße 1) abgegeben.\n",
+        "Ihr Paket wurde bei Familie Beispielnachbar abgegeben.\n",
+        "Die Sendung wurde bei Ihrem Nachbarn Beispielnachbar abgegeben.\n",
+        "Ein Paket haben wir bei Beispielnachbar (2. Etage) abgegeben.\n",
+        "Wir haben sie bei Ihrem Nachbarn abgegeben.\n",
+        "Wir haben sie bei der Filiale abgegeben.\n",
+        "Wir haben sie bei Hermes PaketShop (Hauptplatz 5) abgegeben.\n",
+        "Wir haben sie bei Paketshop Wolke abgegeben.\n",
+        "Bei Abholung abgegeben.\n",
+    ):
+        assert line in text, line
+    _absent(msg, "nowak", "ahornallee", "kirschbaum", "ballermann", "donnerwetter")
+
+
+def test_order_number_in_brackets_is_no_phone_number(tmp_path):
+    raw = _mail(
+        SHOP,
+        "Stornierung von Artikeln aus Ihrer Bestellung Nr. (028-1234567-7654321)",
+        "Ihre Bestellung (028-1234567-7654321) und die bei eBay (02-12345-67890).\n"
+        "Paket (01234567890123), Rückruf (0211) 123-45-67 oder (0151 12345678).\n"
+        "Hotline (00 49) 151 1234567, Paket (0034 0434 1610 9401 2345).\n",
+    )
+    _, [(_, msg)] = _run(tmp_path, [raw])
+    amazon, ebay = r"\((\d{3}-\d{7}-\d{7})\)", r"\((\d{2}-\d{5}-\d{5})\)"
+    subject = " ".join(str(msg["Subject"]).split())
+    [in_subject] = re.findall(rf"Bestellung Nr\. {amazon}$", subject)
+    text = _text(msg)
+    [in_text] = re.findall(rf"Ihre Bestellung {amazon} und die bei eBay {ebay}\.\n", text)
+    assert in_text[0] == in_subject != "028-1234567-7654321"  # the same number in every place
+    assert in_text[1] != "02-12345-67890"
+    assert re.search(
+        r"Paket \(\d{14}\), Rückruf \+49 000 0000000 oder \(\+49 000 0000000\)\.\n", text
+    )
+    # a bracket around the area code belongs to the phone number, one around a whole number stays
+    assert re.search(r"Hotline \+49 000 0000000, Paket \(0034 0\d{3}(?: \d{4}){3}\)\.\n", text)
+    # whole numbers only: invented digits may contain a short group by chance
+    assert not re.search(r"(?<!\d)(?:1234567-7654321|12345-67890|01234567890123)(?!\d)", text)
+    assert "0434 1610 9401 2345" not in text
+
+
+# ----- more than 999 mails, a script without a terminal -----
+
+def test_a_long_run_gets_longer_numbers_and_its_results_are_cleared_too(tmp_path):
+    src = tmp_path / "mails"
+    src.mkdir()
+    for i in range(1000):
+        (src / f"mail{i:04d}.eml").write_bytes(_mail(SHOP, f"Paket {i}", "Unterwegs.\n"))
+    done = _call(src, "--ohne-angaben")
+    assert done.returncode == 0, done.stderr
+    out = src / "anonymisiert"
+    names = sorted(p.name for p in out.iterdir())
+    # sorted by name is sorted by number: "1000_…" does not stand in front of "101_…"
+    assert names == [f"{number:04d}_paketflitzer.example.eml" for number in range(1, 1001)]
+    last = email.message_from_bytes((out / names[-1]).read_bytes(), policy=policy.default)
+    assert str(last["Message-ID"]) == "<beispiel-1000@example.org>"
+    assert str(last["Subject"]) == "Paket 999"
+    foreign = _mail(SHOP, "Fremde Mail", "Nicht vom Skript geschrieben.\n")
+    (out / "1001_fremd.eml").write_bytes(foreign)
+    for path in sorted(src.glob("*.eml"))[2:]:
+        path.unlink()
+    done = _call(src, "--ohne-angaben")
+    assert done.returncode == 0, done.stderr
+    assert sorted(p.name for p in out.iterdir()) == [
+        "001_paketflitzer.example.eml", "002_paketflitzer.example.eml", "1001_fremd.eml",
+    ]
+    assert (out / "1001_fremd.eml").read_bytes() == foreign

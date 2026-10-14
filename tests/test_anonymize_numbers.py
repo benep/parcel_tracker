@@ -309,3 +309,43 @@ def test_real_numbers_in_groups_next_to_dates_are_still_replaced(tmp_path, line,
         _replaced(number, text)
         for part in line.split("{}"):
             assert part.strip() in text
+
+
+# ----- a carrier's prefix of more than four letters stays -----
+JJATA = "JJATA1234567890123456"  # Austrian Post as DHL shows it, invented
+
+
+@pytest.mark.parametrize(
+    ("cell", "number"),
+    [
+        (JJATA, JJATA),  # behind its label
+        (f"Ihr Paket {JJATA} ist da", JJATA),
+        (f"Ihr Paket {JJATA[:15]} ist da", JJATA[:15]),  # ten digits
+    ],
+)
+def test_long_prefix_of_a_tracking_number_stays(tmp_path, cell, number):
+    shape = r"(?<![A-Za-z0-9])JJATA\d+(?![A-Za-z0-9])"
+    [(plain, markup), (other, _)] = _run(tmp_path, _mail(cell), _mail(number))
+    [same] = set(re.findall(shape, other))
+    for text in (plain, markup):
+        [found] = set(re.findall(shape, text))
+        # the same parcel in every mail of the run, with invented digits
+        assert found == same and len(found) == len(number) and found != number
+        assert number[5:] not in text
+
+
+@pytest.mark.parametrize(
+    ("token", "letters"),
+    [
+        ("QWERTZ1234abcd5678XY", "QWERTZ"),  # letters behind the digits: no tracking number
+        ("SITZUNG12ab34567890", "SITZUNG"),
+        ("abcde1234567890123", "abcde"),  # lower case: no carrier writes a prefix like that
+        ("Qwert1234567890123", "Qwert"),
+    ],
+)
+def test_letters_of_a_random_token_are_still_invented(tmp_path, token, letters):
+    [(plain, markup)] = _run(tmp_path, _mail(f"{NUMBER}<br>\nSitzung {token} läuft<br>\n"))
+    for text in (plain, markup):
+        [found] = re.findall(r"Sitzung ([A-Za-z0-9]+) läuft", text)
+        assert len(found) == len(token) and not found.startswith(letters)
+        assert token not in text

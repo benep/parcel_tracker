@@ -10,14 +10,16 @@ Tester mode (messages in German):
         [--email ...]
 
 Takes the mails of every sender and writes them to "anonymisiert/" next to the mails as
-001_<sender domain>.eml, with --zip also as paket-tracker-beispiele.zip; results of an earlier
+001_<sender domain>.eml (a run of 1000 mails or more writes four digits or more, so the files
+sort in their order), with --zip also as paket-tracker-beispiele.zip; results of an earlier
 run in that folder (the ZIP and the NNN_*.eml files this script wrote) are removed first. A
 value that no option gives is asked for on a terminal (an empty answer skips it; a stdin that
 is redirected, also from a null device that calls itself a terminal, is none). Without any
 value the call is refused (exit code 2) unless --ohne-angaben says that this is intended; then
 nothing is asked, only the generic scrubbing runs and a warning says that names and places may
 remain. Replaced are the given values in every spelling (case, ae/oe/ue, name parts, street
-with any or no house number), every mail address but the sender's (the sender of a forwarded
+with any or no house number, also glued to the next word where the case changes: "MeierIhre
+Bestellung", "MeierLindenweg 7"), every mail address but the sender's (the sender of a forwarded
 or answered mail is a person and is replaced too, as is a sender address that carries another
 address in its local part; a sender address of Apple's relay "E-Mail-Adresse verbergen",
 "<sender>_at_<domain>_<id>_<id>@privaterelay.appleid.com", keeps its shape and gets invented
@@ -27,7 +29,9 @@ quoted sender line of a forwarded mail; of a forwarded mail with a quoted header
 the lines above it are dropped, the quoted sender address stays and the quoted recipients are
 replaced), phone
 numbers, links (cut to the host), tracking, order and other
-long numbers (same length and structure, invented digits, the same number becomes the same
+long numbers (same length and structure, invented digits, the carrier's letters in front of a
+tracking number stay, a number in brackets is read like one without them, the same number
+becomes the same
 replacement in every mail of a run, a number of ten digits or more written in groups with
 spaces, tabs, dots or dashes keeps its groups, as does an international number, and a
 tracking number that stands only in a link or in the text of an image is kept as a marked
@@ -36,7 +40,8 @@ address blocks ("PLZ Ort", "Ort, PLZ", "ORT BUNDESLAND PLZ"), AliExpress's block
 "Versand nach" (every line up to the one with the name and the phone number, at most twelve;
 one line where no such line follows), addresses without a label
 (street line above a postcode and city, lines with postcode and city), Amazon's "first name –
-place" line above the order number, the names of neighbours and of the person that took the
+place" line above the order number, the names of neighbours (also "bei NAME (street) abgegeben",
+with the street in the brackets) and of the person that took the
 parcel, and senders or sellers that are no company (in the text, in the From display name and
 in the subject). What the rules find in one mail (the recipient's name with each of its words,
 street, postcode and place, private senders, drop-off places, also the display name of the To
@@ -441,7 +446,18 @@ _T_FREEMAIL = {
     "posteo.net", "mailbox.org", "freenet.de", "aol.com", "proton.me", "protonmail.com",
     "arcor.de", "online.de", "mail.de", "email.de", "tutanota.com", "tuta.io", "vodafone.de",
 }
-_T_B0, _T_B1 = r"(?<![^\W\d_])", r"(?![^\W\d_])"  # no letter before / behind
+# Where a given or learnt word may begin and end: no letter before / behind it, or the case
+# changes there. HTML mails glue a name to the next word ("MeierIhre Bestellung",
+# "MeierLindenweg 7", in capitals "MEIERIhre": the last capital starts the next word); inside
+# an ordinary word the case never changes like that.
+_T_LOWER, _T_UPPER = (
+    "".join(char for char in map(chr, range(0x250)) if kind(char))
+    for kind in (str.islower, str.isupper)
+)
+_T_CASE_CHANGE = (
+    rf"(?-i:(?<=[{_T_LOWER}])(?=[{_T_UPPER}])|(?<=[{_T_UPPER}])(?=[{_T_UPPER}][{_T_LOWER}]))"
+)
+_T_B0, _T_B1 = rf"(?:(?<![^\W\d_])|{_T_CASE_CHANGE})", rf"(?:(?![^\W\d_])|{_T_CASE_CHANGE})"
 _T_UMLAUT = {"ä": "a", "ö": "o", "ü": "u"}
 _T_DIGRAPH = {"ae": "ä", "oe": "ö", "ue": "ü"}
 # "=" and "%" belong to the local part: bounce+user=gmx.de@shop.example is one address.
@@ -507,9 +523,12 @@ _T_GENERIC = re.compile(
     + r"|(?P<blob>(?<![A-Za-z0-9])(?=[A-Za-z0-9]*?\d)(?=[A-Za-z0-9]*?[A-Za-z])[A-Za-z0-9]{16,}"
     + r"(?![A-Za-z0-9]))"
     + rf"|(?P<grouped>{_T_GROUPED_LONG})"
-    # up to three separators between two digits: "0211 / 123 45 67"
+    # up to three separators between two digits: "0211 / 123 45 67"; a bracket in front
+    # belongs to it only around the area code ("(0211) 123-45-67"), so a number that stands
+    # in brackets as a whole ("(028-1234567-7654321)") is read like one without them
     + r"|(?P<phone>\+\d[\d /()-]{6,}\d"
-    + rf"|(?<![\w+./=-])(?!{_T_DATE})\(?0\d(?:[ /()-]{{0,3}}\d){{6,16}}(?!\d))"
+    + rf"|(?<![\w+./=-])(?!{_T_DATE})(?:\((?=[\d /-]{{2,8}}\)))?0\d(?:[ /()-]{{0,3}}\d){{6,16}}"
+    + r"(?!\d))"
     + rf"|(?P<grouped_short>{_T_GROUPED})"
     + r"|(?P<track>(?<![A-Za-z0-9])(?:1Z[0-9A-Z]{16}|[A-Z]{1,4}\d{6,}[A-Z]{0,2})(?![A-Za-z0-9]))"
     + r"|(?P<dashed>(?<![\w-])\d{2,}(?:-\d{2,})+(?![\w-]))"
@@ -622,12 +641,22 @@ _T_SENDER_SAME = re.compile(
     r"([^\W\d_][^\n\d,;|(<@]*?)[ \t]*(?=$|[,;|(<])"
 )
 # Neighbours and the person that took the parcel.
+_T_NEIGHBOUR_NAME = (
+    r"(?P<name>(?:[A-ZÄÖÜ]\.[ \t]?)?[A-ZÄÖÜ][^\W\d_]+(?:[-'’][^\W\d_]+)*"
+    r"(?:[ \t]+[A-ZÄÖÜ][^\W\d_]+(?:[-'’][^\W\d_]+)*){0,2})"
+)
 _T_NEIGHBOUR = re.compile(
     r"(?P<label>(?i:\bNachbar\w*|\babgegeben bei|\bEmpfangen von|\bUnterschrift"
     r"|\bentgegengenommen von|\b(?:ü|ue)bergeben an))"
     r"(?P<gap>[ \t]*[:(]?[ \t]*(?:(?:Herrn?|Frau|Familie|Fam\.)[ \t]+)?)"
-    r"(?P<name>(?:[A-ZÄÖÜ]\.[ \t]?)?[A-ZÄÖÜ][^\W\d_]+(?:[-'’][^\W\d_]+)*"
-    r"(?:[ \t]+[A-ZÄÖÜ][^\W\d_]+(?:[-'’][^\W\d_]+)*){0,2})"
+    + _T_NEIGHBOUR_NAME
+)
+# DHL: "Wir haben sie bei NAME (Straße 5) abgegeben." – the name in front of the verb, the
+# neighbour's address in brackets behind it.
+_T_NEIGHBOUR_AT = re.compile(
+    r"(?P<label>\b[Bb]ei)(?P<gap>[ \t]+(?:(?:Herrn?|Frau|Familie|Fam\.)[ \t]+)?)"
+    + _T_NEIGHBOUR_NAME
+    + r"(?P<address>[ \t]*\([^()\n]{1,60}\))?(?P<verb>[ \t]+abgegeben\b)"
 )
 # Amazon: "Vorname – Ort" on the line above the order number.
 _T_AMAZON_LINE = re.compile(
@@ -1115,6 +1144,19 @@ class _TScrubber:
         self._note(name, replacement)
         return match.group("label") + match.group("gap") + replacement
 
+    def _neighbour_at(self, match):
+        """For "bei NAME (address) abgegeben": a branch or a shop stays, a street in the brackets
+        goes with the name."""
+        name, address = match.group("name"), match.group("address") or ""
+        first = name.split()[0]
+        if _T_NOT_NAME.fullmatch(first) or _t_company(name) or _T_SERVICE.search(name):
+            return match.group(0)
+        self._note(name, "Beispielnachbar")
+        if re.fullmatch(_T_STREET, address.strip(" \t()")):
+            address = " (Musterstraße 1)"
+        return (match.group("label") + match.group("gap") + "Beispielnachbar" + address
+                + match.group("verb"))
+
     def _place(self, match):
         found = match.group(match.re.groups)
         if "Garage" not in found:
@@ -1143,8 +1185,12 @@ class _TScrubber:
         return self._runs[run]
 
     def fake(self, token):
-        """Same length and structure: a prefix such as JJD, 1Z, H or HW- and separators stay."""
-        head = re.match(r"1Z|[A-Za-z]{1,4}(?=[-_]?\d)", token)
+        """Same length and structure: a prefix such as JJD, 1Z, H or HW- and separators stay.
+        A longer prefix (JJATA) stays only in front of nothing but digits, as a carrier writes
+        it; in a random token the letters are invented."""
+        head = re.match(
+            r"1Z|[A-Za-z]{1,4}(?=[-_]?\d)|[A-Z]{5,8}(?=\d{8,}(?:[A-Z]{2})?$)", token
+        )
         head = head.group(0) if head else ""
         rest, tail = token[len(head):], ""
         country = re.fullmatch(r"(\d{8,})([A-Z]{2})", rest) if head else None
@@ -1226,6 +1272,7 @@ class _TScrubber:
         text = _T_INLINE_ADDRESS.sub("\\g<lead>Musterstraße 1, 12345 Musterstadt", text)
         text = _T_PLZ_CITY.sub("\\g<lead>12345 Musterstadt", text)
         text = _T_NEIGHBOUR.sub(self._neighbour, text)
+        text = _T_NEIGHBOUR_AT.sub(self._neighbour_at, text)
         for pattern, replacement in self.rules:
             text = pattern.sub(replacement, text)
         if not self._learning:
@@ -1468,7 +1515,8 @@ def _t_eventim(text, order_mail, count):
 
 
 def _t_build(msg, number, scrubber):
-    """(anonymised mail, domain for the file name, private sender?, value left?)."""
+    """(anonymised mail, domain for the file name, private sender?, value left?);
+    ``number`` is the mail's number as it is written ("001")."""
     display, address = _t_sender(msg)
     plain, markup, has_plain, has_html = _t_texts(msg)
     raw_subject = _t_header(msg, "Subject")
@@ -1488,10 +1536,11 @@ def _t_build(msg, number, scrubber):
     keep += tuple(quoted for quoted in (quoted_plain, quoted_markup) if quoted)
     # Eventim, also forwarded by hand or passed on by the relay: its own rules first.
     evt = next((sender for sender in keep if is_eventim(sender)), None)
+    count = int(number)  # the invented days of Eventim count the mails
     if evt:
         order_mail = (relay_original(evt) or evt) == EVT_ORDER_SENDER
-        plain = _t_eventim(plain, order_mail, number) if has_plain or not has_html else plain
-        markup = _t_eventim(markup, order_mail, number) if has_html else markup
+        plain = _t_eventim(plain, order_mail, count) if has_plain or not has_html else plain
+        markup = _t_eventim(markup, order_mail, count) if has_html else markup
         raw_subject = _t_eventim_subject(raw_subject, order_mail)
         if not private:
             display, address = "EVENTIM", evt_address(address)
@@ -1515,10 +1564,10 @@ def _t_build(msg, number, scrubber):
     subject = " ".join(scrubber.scrub(raw_subject, keep).split())
     _t_set(out, "Subject", subject)
     if evt:
-        out["Date"] = evt_date(number)  # (the real one tells the day of the order)
+        out["Date"] = evt_date(count)  # (the real one tells the day of the order)
     elif _t_header(msg, "Date"):
         _t_set(out, "Date", _t_header(msg, "Date"))
-    out["Message-ID"] = f"<beispiel-{number:03d}@example.org>"
+    out["Message-ID"] = f"<beispiel-{number}@example.org>"
     plain, markup = scrubber.scrub(plain, keep), scrubber.scrub(markup, keep)
     if has_plain or not has_html:
         _t_body(out, plain if plain.endswith("\n") or not plain else plain + "\n", "plain")
@@ -1578,14 +1627,15 @@ def _t_files(paths):
 
 
 def _t_clear(out_dir):
-    """Remove the results of an earlier run: the ZIP and the NNN_*.eml this script wrote."""
+    """Remove the results of an earlier run: the ZIP and the NNN_*.eml this script wrote
+    (a run of 1000 mails or more wrote longer numbers)."""
     for name in os.listdir(out_dir):
         path = os.path.join(out_dir, name)
         if not os.path.isfile(path):
             continue
         if name == _T_ZIP:
             os.remove(path)
-        elif re.fullmatch(r"\d{3}_[a-z0-9.-]+\.eml", name):
+        elif re.fullmatch(r"\d{3,}_[a-z0-9.-]+\.eml", name):
             with open(path, "rb") as handle:
                 own = b"\nMessage-ID: <beispiel-" in handle.read(8192)
             if own:  # a mail of someone else with such a name stays
@@ -1646,15 +1696,17 @@ def _t_run(args):
     except OSError:
         raise _TUsage("Der Zielordner lässt sich nicht anlegen oder leeren.") from None
     written, forwarded, doubtful, passed_on = [], 0, [], []
+    # Three digits, more if the run needs them: the files sort in the order of their numbers.
+    width = max(3, len(str(len(mails))))
     for source, mail in mails:
-        number = len(written) + 1
+        number = f"{len(written) + 1:0{width}d}"
         try:
             out, domain, private, left = _t_build(mail, number, scrubber)
             data = bytes(out)
         except Exception:  # no traceback: it could show a part of a mail
             unreadable.append(source)
             continue
-        name = f"{number:03d}_{domain}.eml"
+        name = f"{number}_{domain}.eml"
         with open(os.path.join(out_dir, name), "wb") as handle:
             handle.write(data)
         written.append((name, data))
