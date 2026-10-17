@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 from email.message import EmailMessage
+from urllib.parse import parse_qsl, urlsplit
 
 from ..models import ParcelStatus
 from .base import (
@@ -18,6 +19,7 @@ from .base import (
     html_body_text,
     html_text,
     is_forwarded,
+    part_links,
     sender,
     sent_at,
     shop_of,
@@ -336,8 +338,76 @@ def parse_ups_mail(msg: EmailMessage) -> list[MailUpdate]:
     return [update]
 
 
+# ----- any other mail -----
+# A shop's shipping mail often names the number only in its link to the carrier's tracking
+# page, and often only in the HTML part. The link tells the carrier: (carrier, hosts with
+# their sub-domains, parameters, the form the whole value must have). Seen 2020 to 2026:
+# "nolp.dhl.de/…?idc=", "dhl.de/…/verfolgen.html?piececode=", "deutschepost.de/…?piececode=",
+# "tracking.dpd.de/parcelstatus?query=", "…dpd.de/cgi-bin/delistrack?pknr=",
+# "gls-group.eu/track/…", "gls-group.eu/…?match=", "gls-group.eu/fdf?unitno=".
+_LINK_NUMBERS = (
+    ("dhl", ("dhl.de", "deutschepost.de"), ("idc", "piececode"),
+     re.compile(r"\d{12}|00340\d{15}|JJD\d{12,24}|[A-Z]{2}\d{9}[A-Z]{2}|[A-Z0-9]{20,21}")),
+    ("dpd", ("dpd.de",), ("query", "pknr"), re.compile(r"\d{14}")),
+    ("gls", ("gls-group.eu", "gls-pakete.de"), ("match", "unitno"), re.compile(r"\d{11,12}")),
+)
+_GLS_TRACK_PATH = re.compile(r"/track/(\d{11,12})")
+# The carriers' own mails have parsers of their own; what is left of them is about a parcel
+# somebody sends (a receipt of a Packstation, an online postage, a label): never read.
+_CARRIER_DOMAINS = (
+    DHL_DOMAIN, DHL_COM_DOMAIN, "deutschepost.de", "dpd.de", "dpd.at", "gls-group.eu",
+    "gls-pakete.de", "gls-rtt.com", "myhermes.de", "hermesworld.com", "ups.com",
+)
+
+
+def _on_host(host: str, domains: tuple[str, ...]) -> bool:
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
+def _link_number(link: str, redirect: bool = True) -> tuple[str, str] | None:
+    """(carrier, number) of a link to a carrier's tracking page; a shop's click tracker
+    that holds such a link as a whole in one of its parameters counts too (one level)."""
+    try:
+        url = urlsplit(link.strip())
+        host = (url.hostname or "").lower()
+    except ValueError:
+        return None
+    if url.scheme not in ("http", "https"):
+        return None
+    params = parse_qsl(url.query)
+    for carrier, domains, names, form in _LINK_NUMBERS:
+        if not _on_host(host, domains):
+            continue
+        values = [value for name, value in params if name.lower() in names]
+        if carrier == "gls" and (track := _GLS_TRACK_PATH.fullmatch(url.path)):
+            values.append(track.group(1))
+        for value in values:
+            if form.fullmatch(value):
+                # GLS stores the number without the check digit
+                return carrier, value[:11] if carrier == "gls" else value
+        return None
+    if redirect:
+        for _, value in params:
+            if value.startswith(("http://", "https://")) and (found := _link_number(value, False)):
+                return found
+    return None
+
+
+def link_numbers(msg: EmailMessage) -> list[tuple[str, str]]:
+    """(carrier, number) of the links to a carrier's tracking page, first occurrence first."""
+    found: list[tuple[str, str]] = []
+    for part in msg.walk():
+        if part.get_content_type() not in ("text/plain", "text/html"):
+            continue
+        for link in part_links(part):
+            if (number := _link_number(link)) and number not in found:
+                found.append(number)
+    return found
+
+
 def parse_generic(msg: EmailMessage) -> list[MailUpdate]:
-    """Any other mail: only numbers that are safe on their own.
+    """Any other mail: only numbers that are safe on their own, and the numbers of links
+    to a carrier's tracking page (not in a carrier's own mail).
 
     The sender's display name becomes the parcel name only for a known shop sender, cut
     like every company name. A carrier's display name ("DHL Paketankündigung") is never a
@@ -356,7 +426,11 @@ def parse_generic(msg: EmailMessage) -> list[MailUpdate]:
         dpd = None
     named = domain in KNOWN_SENDER_DOMAINS and not is_forwarded(msg)
     title = company_name(display) if named and display else None
+    numbers = find_numbers(text, dpd)
+    if not _on_host(domain, _CARRIER_DOMAINS):
+        known = {number for _, number in numbers}
+        numbers += [(c, n) for c, n in link_numbers(msg) if n not in known]
     return [
         MailUpdate(number=number, carrier=carrier, status=None, sent_at=sent, title=title)
-        for carrier, number in find_numbers(text, dpd)
+        for carrier, number in numbers
     ]

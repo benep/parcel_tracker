@@ -826,3 +826,68 @@ def test_dhl_html_part_reads_only_the_forms_dhl_shows_below_the_button():
         assert parse_mail(_html_only_number(page)).updates == [], shown
         page = f"<p>Sendungsstatus einsehen</p><p>{shown}</p>"
         assert parse_mail(_html_only_number(page)).updates == [], shown
+
+
+# ----- a shop's shipping mail names the number only in its link to the carrier -----
+def _shop_html(href: str, sender: str = "Beispiel Shop <versand@shop.example.org>") -> EmailMessage:
+    msg = _msg("Ihre Bestellung wurde versendet", "Ihre Bestellung ist unterwegs.", sender)
+    msg.add_alternative(f'<p>Ihre Bestellung ist unterwegs. <a href="{href}">Sendung verfolgen</a></p>',
+                        subtype="html")
+    return msg
+
+
+@pytest.mark.parametrize(
+    ("href", "carrier", "number"),
+    [
+        ("https://nolp.dhl.de/nextt-online-public/set_identcodes.do?lang=de&amp;idc=999999999901",
+         "dhl", "999999999901"),
+        ("https://www.dhl.de/de/privatkunden/pakete-empfangen/verfolgen.html?piececode=00340999999999999917",
+         "dhl", "00340999999999999917"),
+        ("https://www.deutschepost.de/de/s/sendungsverfolgung/verfolgen.html?piececode=A0099AA9AA0000099999",
+         "dhl", "A0099AA9AA0000099999"),
+        ("https://tracking.dpd.de/parcelstatus?query=09999999999901&amp;locale=de_DE",
+         "dpd", "09999999999901"),
+        ("https://extranet.dpd.de/cgi-bin/delistrack?pknr=09999999999901", "dpd", "09999999999901"),
+        # GLS keeps the number without its check digit
+        ("https://gls-group.eu/track/999999999015", "gls", "99999999901"),
+        ("https://gls-group.eu/DE/de/paketverfolgung?match=99999999901", "gls", "99999999901"),
+        ("https://gls-group.eu/fdf?unitno=999999999015", "gls", "99999999901"),
+        # a shop's click tracker that holds the whole link in one of its parameters
+        ("https://click.shop.example.org/r?u=https%3A%2F%2Ftracking.dpd.de%2Fparcelstatus%3Fquery%3D09999999999901",
+         "dpd", "09999999999901"),
+    ],
+)
+def test_number_from_the_link_to_the_carrier(href, carrier, number):
+    [u] = parse_mail(_shop_html(href)).updates
+    assert (u.carrier, u.number, u.status, u.title) == (carrier, number, None, None)
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "https://shop.example.org/sendung?idc=999999999901",  # no carrier's host
+        "https://tracking.dpd.de/parcelstatus?query=12345",  # no DPD number
+        "https://nolp.dhl.de/nextt-online-public/set_identcodes.do?order=999999999901",
+        "https://gls-group.eu/track/9999999990",
+        # a link inside a link inside a link stays unread
+        "https://a.example.org/?u=https%3A%2F%2Fb.example.org%2F%3Fu%3Dhttps%253A%252F%252F"
+        "tracking.dpd.de%252Fparcelstatus%253Fquery%253D09999999999901",
+    ],
+)
+def test_other_links_name_no_number(href):
+    assert parse_mail(_shop_html(href)).updates == []
+
+
+def test_carrier_mail_about_a_parcel_one_sends_names_no_link_number():
+    """A DHL online postage or a Packstation receipt links its parcel too: it is no parcel
+    that comes."""
+    href = "https://nolp.dhl.de/nextt-online-public/set_identcodes.do?idc=999999999901"
+    msg = _shop_html(href, "DHL <noreply@dhl.com>")
+    msg.replace_header("Subject", "Auftragsbestätigung Ihrer Online Frankierung")
+    assert parse_mail(msg).updates == []
+
+
+def test_link_number_once_next_to_the_same_number_in_the_text():
+    msg = _shop_html("https://www.dhl.de/verfolgen.html?piececode=00340999999999999917")
+    msg.get_body(preferencelist=("plain",)).set_content("Sendungsnummer 00340999999999999917")
+    assert [u.number for u in parse_mail(msg).updates] == ["00340999999999999917"]
