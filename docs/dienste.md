@@ -223,7 +223,7 @@ Die Integration ist für Deutschland gebaut. Die Einstellung **Land** ist die Gr
 - Für die Schweiz bleibt die GLS-Abfrage auf der deutschen Variante, weil die Schweizer Variante ihre Texte auf Englisch liefert.
 - Der Mail-Import liest die Mails von `noreply@gls-group.eu` und `noreply@gls-rtt.com`, egal welches Land eingestellt ist. Zustelladresse, Empfängername und Referenz übernimmt er nie.
 - `noreply@gls-group.eu`: „Ihr Paket von … ist unterwegs“ legt das Paket an; „… wurde durch GLS am gewünschten Ort abgestellt“ oder „zugestellt“ meldet die Zustellung mit der Uhrzeit. Das gilt auch für mehrere Pakete in einer Mail: Nennt eine Mail mehrere Paketnummern, legt der Import für jede Nummer ein eigenes Paket an.
-- `noreply@gls-rtt.com`: „Ihr Paket ist auf dem Weg!“ bedeutet: heute in Zustellung.
+- `noreply@gls-rtt.com`: „Ihr Paket ist auf dem Weg!“ und „Ihr GLS Paket ist bald da!“ bedeuten: heute in Zustellung.
 
 **DPD Österreich:**
 

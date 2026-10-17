@@ -149,6 +149,29 @@ def test_forwarded_shop_mail_has_no_name():
     ]
 
 
+@pytest.mark.parametrize(
+    ("number", "read"),
+    [
+        ("JJD000012978217606560", True),
+        ("JJD000099999999999999999999", True),  # 24 digits (seen 2024)
+        ("JJD0000999999999999999999999", False),  # 25 digits
+    ],
+)
+def test_jjd_numbers_up_to_24_digits(number, read):
+    msg = _msg("Versandbestätigung", f"Ihre DHL-Sendungsnummer: {number}", "Shop <shop@example.org>")
+    assert [u.number for u in parse_generic(msg)] == ([number] if read else [])
+
+
+def test_jvgl_number_only_in_dhl_mails():
+    """'JVGL' and 20 digits (seen 2020 to 2023): DHL's own mails name nothing else."""
+    body = "Ihre Sendung JVGL09999999999999999999 ist bald da.\n"
+    [u] = parse_mail(_msg("Ihr DHL Paket kommt heute", body, "DHL Paket <noreply@dhl.de>")).updates
+    assert (u.number, u.carrier, u.status) == (
+        "JVGL09999999999999999999", "dhl", ParcelStatus.OUT_FOR_DELIVERY
+    )
+    assert parse_generic(_msg("Versandbestätigung", body, "Shop <shop@example.org>")) == []
+
+
 def test_ups_shipper_names_the_shop():
     msg = load_mail("070_pkginfo_ups_versandbenachrichtigung_kont.eml")
     [u] = parse_ups_mail(msg)

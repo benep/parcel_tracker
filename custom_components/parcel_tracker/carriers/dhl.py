@@ -187,7 +187,7 @@ class DhlCarrier(Carrier):
             return Match.SURE
         if _S10.fullmatch(number):
             return Match.SURE
-        if number.startswith("JJD"):
+        if number.startswith(("JJD", "JVGL")):
             return Match.POSSIBLE
         if len(number) == 12 and number.isdigit():
             return Match.POSSIBLE

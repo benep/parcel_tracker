@@ -58,8 +58,9 @@ _SENDER_LABELS = frozenset(
 GLS_GROUP_SENDER = "noreply@gls-group.eu"
 GLS_RTT_SENDER = "noreply@gls-rtt.com"
 GLS_GROUP_SENDERS = frozenset({GLS_GROUP_SENDER, GLS_RTT_SENDER})
+# (the real-time tracking mail leaves "<strong>" in front of the number in its text part)
 _GROUP_NUMBER = re.compile(
-    r"(?:Paketnummer|Sendungsnummer)\s*:?\s*(\d{11})\d?(?!\d)", re.IGNORECASE
+    r"(?:Paketnummer|Sendungsnummer)\s*:?\s*(?:<strong>)?(\d{11})\d?(?!\d)", re.IGNORECASE
 )
 # "Dies betrifft ebenso das Paket/die Pakete A, B." and "(Wir wurden ebenfalls) beauftragt
 # mit der Zustellung des Paketes/der Pakete A, B.": the same news for every number listed.
@@ -174,7 +175,8 @@ def _group_status(address: str, subj: str, text: str) -> ParcelStatus | None:
         return None  # the GLS lookup tells what happened
     if address == GLS_RTT_SENDER:
         # Real-time tracking only starts once the parcel is on the delivery vehicle.
-        if "auf dem weg" in lower or "ihr paket ist fast da" in text.lower():
+        # ("Ihr …" or "Dein Paket ist fast da", the latter below "Ihr GLS Paket ist bald da!")
+        if "auf dem weg" in lower or re.search(r"\b(?:ihr|dein) paket ist fast da", text.lower()):
             return ParcelStatus.OUT_FOR_DELIVERY
         return None
     if _GROUP_DELIVERED.search(lower):

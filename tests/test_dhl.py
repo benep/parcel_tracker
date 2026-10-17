@@ -27,6 +27,7 @@ URL = f"{DHL_URL}?language=de&recipientPostalCode=10115&trackingNumber={NUMBER}"
 def test_matches():
     assert DhlCarrier.matches(NUMBER) is Match.SURE
     assert DhlCarrier.matches("JJD000390007777777777") is Match.POSSIBLE
+    assert DhlCarrier.matches("JVGL09999999999999999999") is Match.POSSIBLE
     assert DhlCarrier.matches("123456789012") is Match.POSSIBLE
     assert DhlCarrier.matches("09999999999901") is Match.NO
 

@@ -57,6 +57,8 @@ _DHL_S10 = re.compile(r"(?<![A-Za-z0-9])([A-Z]{2}\d{9}[A-Z]{2})(?![A-Za-z0-9])")
 # look like that): read only in DHL's own mails and only right behind its label, which may
 # stand in the table cell or on the line before the number.
 _DHL_SHORT = re.compile(r"\bSendungsnummer\s*:?\s*(\d{12})(?!\d)")
+# "JVGL" and 20 digits (seen 2020 to 2023): only in DHL's own mails as well.
+_DHL_JVGL = re.compile(r"(?<![A-Za-z0-9])(JVGL\d{20})(?!\d)")
 # The text part of some mails is empty, or names the number only in a link (the text of the
 # link is a placeholder nobody filled in). The HTML part shows the number on a line of its
 # own below the button. Read there are only the forms seen there that the patterns above do
@@ -149,7 +151,12 @@ def _dhl_words(subj: str, status: ParcelStatus | None) -> str | None:
 
 def _dhl_numbers(text: str) -> list[str]:
     numbers = [n for carrier, n in find_numbers(text) if carrier == "dhl"]
-    return numbers or _DHL_S10.findall(text) or _DHL_SHORT.findall(text)
+    return (
+        numbers
+        or _DHL_S10.findall(text)
+        or _DHL_JVGL.findall(text)
+        or _DHL_SHORT.findall(text)
+    )
 
 
 def parse_dhl_mail(msg: EmailMessage) -> list[MailUpdate]:

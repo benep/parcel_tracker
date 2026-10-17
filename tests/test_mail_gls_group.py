@@ -135,6 +135,20 @@ def test_sender_name_only_through_the_naming_gate(company, title, shop):
     assert (u.title, u.shop) == (title, shop)
 
 
+def test_rtt_mail_with_the_number_in_markup_is_out_for_delivery():
+    """'Ihr GLS Paket ist bald da!' (seen 2021 to 2023) leaves HTML in its text part."""
+    body = (
+        "Hallo Max Mustermann, gute Nachrichten!\nDein Paket ist fast da. Mit Real-Time-Tracking "
+        "kannst du es jetzt live verfolgen:\nDeine Sendungsnummer: <strong>99999999902</strong> "
+        "(Tracking-Id: ABCD1234)\n"
+    )
+    msg = _msg("Ihr GLS Paket ist bald da!", body, GLS_RTT_SENDER)
+    [u] = parse_gls_group_mail(msg)
+    assert (u.number, u.status, u.eta_date) == (
+        "99999999902", ParcelStatus.OUT_FOR_DELIVERY, sent_at(msg).date()
+    )
+
+
 def test_rtt_mail_with_another_subject_only_names_the_parcel():
     body = "Ihr Paket hat sich verspätet.\nSendungsnummer: 99999999902\n"
     [u] = parse_gls_group_mail(_msg("Information zu Ihrem Paket", body, GLS_RTT_SENDER))
