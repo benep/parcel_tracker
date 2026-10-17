@@ -1,7 +1,7 @@
 """Hermes notification mails (no Home Assistant imports).
 
 The drop-off place ("WunschAblageort …") is never read: only number, status, day,
-window and the shop's name are taken.
+window and the shop's name are taken, and "Haustür" for "Erfolgreiche Haustürzustellung".
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from email.message import EmailMessage
 
 from ..models import ParcelStatus
 from .base import (
+    FRONT_DOOR,
     MailUpdate,
     at,
     body_text,
@@ -120,6 +121,8 @@ def parse_hermes_mail(msg: EmailMessage) -> list[MailUpdate]:
         text = text[_NEW_DAY.search(text).end() :][:200]
     elif status is ParcelStatus.DELIVERED:
         update.delivered_at = sent
+        if "haustürzustellung" in subj.lower():
+            update.delivery_place = FRONT_DOOR
     elif status is ParcelStatus.OUT_FOR_DELIVERY:
         day = sent.date()
     elif status is ParcelStatus.IN_TRANSIT:

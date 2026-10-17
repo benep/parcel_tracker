@@ -34,6 +34,14 @@ _MORE = re.compile(r"\s*und\s+\d+\s+weitere[r]?\s+Artikel\s*$")
 ATTEMPT_TEXT = "Zustellung versucht"
 DELAY_TEXT = "Lieferung verspätet"
 PROBLEM_TEXT = "Lieferprobleme"
+# Where a delivered parcel was left (``MailUpdate.delivery_place``): one of these words, never
+# what a mail says beyond them (the drop-off place the recipient chose, a neighbour's name).
+LETTER_BOX = "Briefkasten"
+FRONT_DOOR = "Haustür"
+DROP_OFF = "Ablageort"
+NEIGHBOUR = "Nachbar"
+HOUSEMATE = "Hausbewohner"
+RECEPTION = "Empfangsperson"
 
 
 @dataclass
@@ -76,6 +84,10 @@ class MailUpdate:
     # name and street, never a person, a postcode or the shop's internal id.
     pickup_point: str | None = None
     pickup_until: date | None = None
+    # Where a delivered parcel was left, as one of the words ``LETTER_BOX`` … ``RECEPTION``
+    # ("Briefkasten", "Nachbar"): the place of the parcel and of the line of its delivery in
+    # the history.
+    delivery_place: str | None = None
     # Amazon's own id of a shipment, from the link to its tracking page ("shipmentId"): each
     # mail from "Versendet" on names it, the same in every mail about that box.
     shipment_id: str | None = None

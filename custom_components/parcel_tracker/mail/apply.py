@@ -240,8 +240,11 @@ def _forward(parcel: Parcel, update: MailUpdate, now: datetime) -> bool:
             # words an earlier mail or the carrier gave it ("Im Zielland angekommen").
             text = old.status_text
         events = list(old.events) if old else []
+        # Where a delivered parcel was left ("Briefkasten"): its place, and the place of the
+        # line of the delivery. Without one the place stays what it was.
+        place = update.delivery_place if update.status is ParcelStatus.DELIVERED else None
         if old is None or old.status is not update.status or assumed or own_words:
-            events.insert(0, TrackingEvent(update.sent_at, text, None))
+            events.insert(0, TrackingEvent(update.sent_at, text, place))
         if update.eta_date:
             eta = (update.eta_date, update.eta_from, update.eta_to, update.eta_latest)
         elif (
@@ -289,7 +292,7 @@ def _forward(parcel: Parcel, update: MailUpdate, now: datetime) -> bool:
             eta_from=eta[1],
             eta_to=eta[2],
             eta_latest=eta[3],
-            location=old.location if old else None,
+            location=place or (old.location if old else None),
             pickup_point=pickup_point if pickup else None,
             pickup_until=pickup_until if pickup else None,
             delivered_at=delivered_at,

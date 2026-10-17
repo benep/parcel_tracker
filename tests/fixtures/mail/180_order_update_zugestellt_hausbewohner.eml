@@ -1,0 +1,56 @@
+X-Fixture: derived from a mail anonymised with anonymize_mail.py (tester mode);
+ the order number is invented; the HTML part is written as plain text (it was base64),
+ its padding of the subject line and the legal notice are cut
+From: "Amazon.de" <order-update@amazon.de>
+To: max@example.org
+Subject: Zugestellt: 1 Artikel | Bestellnummer 999-9999999-9999180
+Date: Sat, 05 Jul 2025 15:12:46 +0000
+Message-ID: <fixture-180@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============fixture-180=="
+
+--===============fixture-180==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Meine Bestellungen
+https://www.amazon.de/…
+Mein Konto
+https://www.amazon.de/…
+Erneut kaufen
+https://www.amazon.de/…
+
+    Dein Paket wurde zugestellt!
+
+Heute zugestellt
+
+Max – Musterstadt
+
+Bestellnr.
+999-9999999-9999180
+
+Musterstraße
+https://www.amazon.de/…
+
+Um Artikel zurückzusenden oder zu ersetzen, gehe zu Meine Bestellungen
+https://www.amazon.de/…
+
+--===============fixture-180==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+
+<html><body>
+<p>Zugestellt: 1 Artikel | Bestellnummer 999-9999999-9999180</p>
+<p>Meine Bestellungen Mein Konto Erneut kaufen</p>
+<p>Dein Paket wurde zugestellt!</p>
+<p>Heute zugestellt</p>
+<p>Die Sendung wurde einem Hausbewohner übergeben.</p>
+<p>Max – Musterstadt</p>
+<p>Bestellnr. 999-9999999-9999180</p>
+<p>Musterstraße</p>
+<p>Um Artikel zurückzusenden oder zu ersetzen, gehe zu Meine Bestellungen.</p>
+</body></html>
+
+--===============fixture-180==--

@@ -11,11 +11,16 @@ from ..models import ParcelStatus
 from .base import (
     ATTEMPT_TEXT,
     DELAY_TEXT,
+    FRONT_DOOR,
+    HOUSEMATE,
+    LETTER_BOX,
     MONTHS,
+    RECEPTION,
     MailUpdate,
     at,
     body_text,
     carrier_for,
+    html_body_text,
     part_links,
     relative_day,
     resolve_dates,
@@ -94,6 +99,16 @@ _ON_THE_ROUTE = re.compile(
     r"^Ihr (?:Amazon )?Paket(?: mit \S.*)? wird zugestellt\.?$", re.MULTILINE
 )
 _LATER = re.compile(r"Jetzt erwartet bis zum (\d{1,2}\.\s*[A-Za-zä]+)")
+# Where the delivery mail says the parcel was left: "Die Sendung wurde im Briefkasten
+# hinterlegt", "Dein Paket wurde an deinen Briefkasten zugestellt.", "… wurde bei der Haustür
+# oder auf der Veranda hinterlegt", "… wurde einem Hausbewohner übergeben", "… wurde einer
+# Empfangsperson übergeben".
+_LEFT_AT = (
+    (re.compile(r"\bwurde (?:an deinen|im) Briefkasten (?:zugestellt|hinterlegt)\b"), LETTER_BOX),
+    (re.compile(r"\bwurde bei der Haustür\b"), FRONT_DOOR),
+    (re.compile(r"\bwurde einem Hausbewohner übergeben\b"), HOUSEMATE),
+    (re.compile(r"\bwurde einer Empfangsperson übergeben\b"), RECEPTION),
+)
 # The plain layout names an item with its quantity before it ("2 x …", "2-mal …"), below
 # the number and, without quotes, in the subject ("2 x Beispiel... und 2 weiteren
 # Artikeln"). The other mails of the order name it without the quantity.
@@ -184,6 +199,16 @@ def stage_status(text: str) -> ParcelStatus | None:
         return ParcelStatus.DELIVERED
     if _ON_THE_ROUTE.search(text):
         return ParcelStatus.OUT_FOR_DELIVERY
+    return None
+
+
+def _left_at(msg: EmailMessage, text: str) -> str | None:
+    """Where the delivery mail says the parcel was left (``_LEFT_AT``), from its text part,
+    else from its HTML part (many mails tell it only there); None if neither does."""
+    for source in (text, html_body_text(msg)):
+        flat = " ".join(source.split())
+        if place := next((word for pattern, word in _LEFT_AT if pattern.search(flat)), None):
+            return place
     return None
 
 
@@ -373,6 +398,7 @@ def parse_amazon(msg: EmailMessage, read_otp: bool) -> list[MailUpdate]:
     if read_otp and (otp := _OTP.search(text)):
         code = otp.group(1)
 
+    place = _left_at(msg, text) if status is ParcelStatus.DELIVERED else None
     from_subject = subject_title(subj) if len(orders) == 1 else None
     shipments = _shipments(msg)
     updates = []
@@ -402,6 +428,7 @@ def parse_amazon(msg: EmailMessage, read_otp: bool) -> list[MailUpdate]:
                 postponed=attempt or delay,
                 status_text=ATTEMPT_TEXT if attempt else DELAY_TEXT if delay else None,
                 shipment_id=shipments.get(match.group(2)),
+                delivery_place=place,
                 **eta,
             )
         )

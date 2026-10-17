@@ -48,7 +48,7 @@ Verschwindet ein Paket aus der Liste (gelöscht oder nach der eingestellten Zahl
 | `eta_latest` | letzter Tag einer Lieferspanne |
 | `eta_from`, `eta_to` | Beginn und Ende des Zeitfensters |
 | `days_until` | Tage bis zum Liefertag (0 = heute) |
-| `location` | Standort, wenn bekannt |
+| `location` | Standort, wenn bekannt; bei einer Zustellung aus der Mail, wo das Paket abgegeben wurde („Briefkasten“, „Haustür“, „Ablageort“, „Nachbar“, „Hausbewohner“, „Empfangsperson“) |
 | `location_source` | `17track`, wenn der Ort von 17track stammt, sonst leer |
 | `pickup_point` | Abholpunkt (Packstation, Filiale, PaketShop), wenn bekannt |
 | `pickup_until` | letzter Abholtag, wenn bekannt |

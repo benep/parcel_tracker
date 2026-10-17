@@ -9,6 +9,9 @@ from email.message import EmailMessage
 from ..models import ParcelStatus
 from .base import (
     DPD_DOMAINS,
+    DROP_OFF,
+    LETTER_BOX,
+    NEIGHBOUR,
     MailUpdate,
     at,
     body_text,
@@ -90,6 +93,13 @@ _DHL_DROPPED = re.compile(
     r"\bliegt\b(?:\s+\S+){0,3}?\s+ablageort\b|\bablageort\s+hinterlegt\b"
     r"|\bliegt\s+im\s+briefkasten\b|\bliegt\s+nebenan\b"
 )
+# Where the subject of a delivery says the parcel was left ("liegt im Briefkasten", "liegt am
+# gewünschten Ablageort", "liegt nebenan"); which drop-off place it is, is never read.
+_DHL_LEFT_AT = (
+    (re.compile(r"\bbriefkasten\b"), LETTER_BOX),
+    (re.compile(r"\bablageort\b"), DROP_OFF),
+    (re.compile(r"\bnebenan\b|\bnachbar"), NEIGHBOUR),
+)
 # ... but "an Packstation 123 zugestellt" waits for the recipient.
 _DHL_PICKUP_PLACE = re.compile(r"packstation|filiale|paketshop|poststation|postfiliale")
 # (also the reminder "liegt seit 2 Tagen in der Filiale")
@@ -158,7 +168,8 @@ def parse_dhl_mail(msg: EmailMessage) -> list[MailUpdate]:
     Every sender at dhl.de comes here, so the status is read from the subject only: "ist
     unterwegs", "kommt morgen" (the day after the mail), "kommt heute" / "wird heute
     zugestellt" / "wird gleich zugestellt" (told in its own words), "wurde … zugestellt",
-    "liegt am gewünschten Ablageort" / "liegt im Briefkasten" / "liegt nebenan" and, for a
+    "liegt am gewünschten Ablageort" / "liegt im Briefkasten" / "liegt nebenan" (each with
+    its place, ``_DHL_LEFT_AT``) and, for a
     Packstation or branch, "liegt zur Abholung
     bereit" / "wurde an Packstation … zugestellt". Any other subject that speaks of a
     "Sendung" means "on its way" without a day; a question (survey) and
@@ -211,6 +222,10 @@ def parse_dhl_mail(msg: EmailMessage) -> list[MailUpdate]:
         postponed = eta_date is not None
     elif status is ParcelStatus.DELIVERED:
         delivered_at = sent
+    place = None
+    if status is ParcelStatus.DELIVERED:
+        lower = subj.lower()
+        place = next((word for pattern, word in _DHL_LEFT_AT if pattern.search(lower)), None)
     return [
         MailUpdate(
             number=numbers[0],
@@ -225,6 +240,7 @@ def parse_dhl_mail(msg: EmailMessage) -> list[MailUpdate]:
             shop=shop_name,
             postponed=postponed,
             status_text=_dhl_words(subj, status),
+            delivery_place=place,
         )
     ]
 
